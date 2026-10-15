@@ -41,12 +41,12 @@
 <div id="hud">
   <div class="panel">
     <h1>Single 3D Object VR</h1>
-    <div id="summary">Enter VR or Passthrough. One movable object uses woman_wearing_swimsuit.glb. Pick it up, move it around, and throw it.</div>
+    <div id="summary">Enter VR or Passthrough. One movable object uses woman_wearing_swimsuit.glb. Pick it up, resize it with both hands, move it around, and throw it.</div>
     <div id="toolbar"><span id="vr-slot"></span><span id="ar-slot"></span><button id="reset" type="button">Reset scene</button></div>
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: hold trigger/grip near the 3D model to grab; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Desktop: click and drag the model.</div>
+<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Desktop: click and drag the model.</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -229,6 +229,10 @@ world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0,
 // Physics uses a simple 1 kg cuboid collider for the single imported 3D model.
 const CUBE_SIZE = 0.34;
 const HALF_CUBE = CUBE_SIZE / 2;
+const MIN_MODEL_SCALE = 0.35;
+const MAX_MODEL_SCALE = 3.5;
+let boxCollider = null;
+let currentPhysicsScale = 1;
 const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.78 });
 const cubeGeometry = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
 
@@ -254,6 +258,15 @@ scene.add(boxVisual);
 const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.78 };
 let boxBody;
 
+function makeObjectColliderDescriptor(scaleFactor = 1) {
+  const half = HALF_CUBE * scaleFactor;
+  return RAPIER.ColliderDesc.cuboid(half, half, half)
+    .setMass(1.0) // Keep the object easy to handle even when enlarged.
+    .setFriction(0.68)
+    .setRestitution(0.68)
+    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max);
+}
+
 function createDynamicCubeBody(position) {
   const desc = RAPIER.RigidBodyDesc.dynamic()
     .setTranslation(position.x, position.y, position.z)
@@ -262,12 +275,8 @@ function createDynamicCubeBody(position) {
     .setCanSleep(true)
     .setCcdEnabled(true);
   const body = world.createRigidBody(desc);
-  const collider = RAPIER.ColliderDesc.cuboid(HALF_CUBE, HALF_CUBE, HALF_CUBE)
-    .setMass(1.0)
-    .setFriction(0.68)
-    .setRestitution(0.68)
-    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max);
-  world.createCollider(collider, body);
+  boxCollider = world.createCollider(makeObjectColliderDescriptor(1), body);
+  currentPhysicsScale = 1;
   return body;
 }
 
@@ -276,8 +285,26 @@ function createBoxBody() {
   boxBody = createDynamicCubeBody(initial);
   boxVisual.position.set(initial.x, initial.y, initial.z);
   boxVisual.quaternion.identity();
+  boxVisual.scale.setScalar(1);
 }
 createBoxBody();
+
+// Two-hand scaling changes both the visible GLB and its Rapier collider. Collider updates
+// are thresholded slightly during movement for performance, then forced to the exact scale
+// when the user releases one hand or resets the scene.
+function applyObjectScale(requestedScale, forceColliderUpdate = false) {
+  const scale = THREE.MathUtils.clamp(requestedScale, MIN_MODEL_SCALE, MAX_MODEL_SCALE);
+  boxVisual.scale.setScalar(scale);
+  if (!boxBody) return scale;
+  if (!boxCollider || forceColliderUpdate || Math.abs(scale - currentPhysicsScale) >= 0.035) {
+    if (boxCollider) {
+      try { world.removeCollider(boxCollider, true); } catch (error) { console.warn('Could not replace scaled collider:', error); }
+    }
+    boxCollider = world.createCollider(makeObjectColliderDescriptor(scale), boxBody);
+    currentPhysicsScale = scale;
+  }
+  return scale;
+}
 
 // The sole grabbable object uses the imported 3D model as its visible appearance.
 const starterCube = { visual: boxVisual, get body() { return boxBody; }, initial, label: '3D model' };
@@ -574,6 +601,8 @@ const handStates = [];
 const tempPos = new THREE.Vector3();
 const tempQuat = new THREE.Quaternion();
 let heldBy = null;
+let secondHolder = null;
+let scaleGesture = null;
 // Keep grabbing at a natural arm's reach; use the left stick to approach the model if thrown farther away.
 const MAX_GRAB_DISTANCE = 1.85;
 
@@ -582,10 +611,63 @@ function getWorldPose(obj, pos, quat) {
   obj.getWorldPosition(pos);
   obj.getWorldQuaternion(quat);
 }
+function beginTwoHandScale(state, inputKind, target) {
+  const primary = heldBy;
+  if (!primary || !primary.holding || !target || !target.body || scaleGesture || primary === state) return false;
+
+  const posA = new THREE.Vector3();
+  const posB = new THREE.Vector3();
+  const quatA = new THREE.Quaternion();
+  const quatB = new THREE.Quaternion();
+  getWorldPose(primary.poseObject, posA, quatA);
+  getWorldPose(state.poseObject, posB, quatB);
+  const midpoint = posA.clone().add(posB).multiplyScalar(0.5);
+  const distance = Math.max(0.08, posA.distanceTo(posB));
+
+  state.holding = true;
+  state.inputKind = inputKind;
+  state.grabbedCube = target;
+  secondHolder = state;
+  scaleGesture = {
+    a: primary,
+    b: state,
+    target,
+    initialDistance: distance,
+    initialScale: boxVisual.scale.x || 1,
+    centerOffset: target.visual.position.clone().sub(midpoint),
+    initialQuaternion: target.visual.quaternion.clone(),
+    lastObjectPosition: target.visual.position.clone(),
+    lastTime: performance.now()
+  };
+  primary.linearVelocity.set(0, 0, 0);
+  primary.angularVelocity.set(0, 0, 0);
+  state.linearVelocity.set(0, 0, 0);
+  state.angularVelocity.set(0, 0, 0);
+  setStatus('Two-hand scaling active. Move your hands apart to enlarge the 3D model; bring them closer to shrink it. Release one hand to continue holding, or both to throw.');
+  return true;
+}
+
 function beginXRGrab(state, inputKind) {
-  if (state.holding || heldBy || mouseGrab.active) return false;
+  if (state.holding || mouseGrab.active) return false;
   getWorldPose(state.poseObject, tempPos, tempQuat);
   const candidate = findClosestGrabbable(tempPos);
+
+  // If one hand/controller already holds the object, allow the other hand to attach
+  // to that same object and start a two-hand scale gesture.
+  if (heldBy) {
+    if (heldBy === state || !heldBy.holding || !heldBy.grabbedCube) return false;
+    if (candidate.cube === heldBy.grabbedCube) {
+      return beginTwoHandScale(state, inputKind, heldBy.grabbedCube);
+    }
+    const now = performance.now();
+    if (now - (state.lastRejectStatus || 0) > 1200) {
+      setStatus('Bring your second hand/controller close to the 3D model to scale it with both hands.');
+      state.lastRejectStatus = now;
+    }
+    return false;
+  }
+
+  if (scaleGesture) return false;
   if (!candidate.cube) {
     const now = performance.now();
     if (now - (state.lastRejectStatus || 0) > 1200) {
@@ -616,31 +698,77 @@ function beginXRGrab(state, inputKind) {
   body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
   body.setLinvel({ x: 0, y: 0, z: 0 }, true);
   body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  const name = '3D model';
-  setStatus(`${name} grabbed. Move your hand; release trigger/grip or unpinch to throw.`);
+  setStatus('3D model grabbed. Bring your other hand/controller to the model to scale it with both hands.');
   return true;
 }
+
+function rebaseSingleHandHold(state, target) {
+  getWorldPose(state.poseObject, tempPos, tempQuat);
+  const inverse = tempQuat.clone().invert();
+  state.offsetPos.copy(target.visual.position).sub(tempPos).applyQuaternion(inverse);
+  state.offsetQuat.copy(inverse).multiply(target.visual.quaternion);
+  state.lastPos.copy(target.visual.position);
+  state.lastQuat.copy(target.visual.quaternion);
+  state.lastTime = performance.now();
+  state.linearVelocity.set(0, 0, 0);
+  state.angularVelocity.set(0, 0, 0);
+  state.grabbedCube = target;
+  state.holding = true;
+}
+
+function releaseTargetWithState(target, state) {
+  if (!target || !target.body) return;
+  applyObjectScale(boxVisual.scale.x || 1, true);
+  const body = target.body;
+  body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+  const v = (state?.linearVelocity || new THREE.Vector3()).clone().clampLength(0, 7.0);
+  const w = (state?.angularVelocity || new THREE.Vector3()).clone().clampLength(0, 10.0);
+  body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
+  body.setAngvel({ x: w.x, y: w.y, z: w.z }, true);
+  body.wakeUp();
+}
+
 function endXRGrab(state) {
-  // Release the single 3D model held by this input state.
-  // This is deliberately idempotent to handle duplicate/missed WebXR release events safely.
+  // During a two-hand scale gesture, releasing either hand ends scaling. If the other
+  // hand is still holding, rebase it to a normal one-hand grab without dropping the model.
   if (!state) return;
+  if (scaleGesture && (state === scaleGesture.a || state === scaleGesture.b)) {
+    const gesture = scaleGesture;
+    const target = gesture.target;
+    const other = state === gesture.a ? gesture.b : gesture.a;
+    state.holding = false;
+    state.inputKind = null;
+    state.grabbedCube = null;
+    scaleGesture = null;
+    secondHolder = null;
+    applyObjectScale(boxVisual.scale.x || 1, true);
+
+    if (other && other.holding && other.grabbedCube === target) {
+      heldBy = other;
+      rebaseSingleHandHold(other, target);
+      setStatus('Two-hand scaling paused. The remaining hand still holds the model; release it to throw.');
+      return;
+    }
+
+    heldBy = null;
+    releaseTargetWithState(target, state);
+    setStatus('3D model released after two-hand scaling. It can be grabbed and resized again.');
+    return;
+  }
+
   const wasHolding = state.holding || heldBy === state;
   const target = state.grabbedCube || null;
   state.holding = false;
   state.inputKind = null;
   state.grabbedCube = null;
   if (heldBy === state) heldBy = null;
+  if (secondHolder === state) secondHolder = null;
   if (!wasHolding || !target || !target.body) return;
 
-  const body = target.body;
-  body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
-  const v = state.linearVelocity.clone().clampLength(0, 7.0);
-  const w = state.angularVelocity.clone().clampLength(0, 10.0);
-  body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
-  body.setAngvel({ x: w.x, y: w.y, z: w.z }, true);
-  body.wakeUp();
-  setStatus('3D model released. You can grab and throw it again; use the left thumbstick to move closer if needed.');
+  releaseTargetWithState(target, state);
+  setStatus('3D model released. You can grab, throw and resize it again.');
 }
+
 function makeState(poseObject, kind) {
   return {
     poseObject, kind, holding: false, inputKind: null, grabbedCube: null,
@@ -737,7 +865,7 @@ function updateHandAnchors() {
     }
     const pinchNow = thumbPos.distanceTo(indexPos) < 0.035;
     if (pinchNow) {
-      if (!state.holding && !heldBy && performance.now() - state.lastAttempt > 180) {
+      if (!state.holding && performance.now() - state.lastAttempt > 180) {
         state.lastAttempt = performance.now();
         beginXRGrab(state, 'pinch');
       }
@@ -775,7 +903,7 @@ function updateControllerGrabPolling(now) {
     // not just grabs that began through polling. This covers missed WebXR end events.
     if (state.holding && !down && ['select', 'squeeze', 'poll'].includes(state.inputKind)) {
       endXRGrab(state);
-    } else if (down && !state.holding && !heldBy && now - state.lastAttempt > 180) {
+    } else if (down && !state.holding && now - state.lastAttempt > 180) {
       state.lastAttempt = now;
       beginXRGrab(state, 'poll');
     }
@@ -852,7 +980,46 @@ function syncVisual() {
   boxVisual.position.set(p.x, p.y, p.z);
   boxVisual.quaternion.set(q.x, q.y, q.z, q.w);
 }
+function updateTwoHandScale(now) {
+  const gesture = scaleGesture;
+  if (!gesture || !gesture.a?.holding || !gesture.b?.holding || !gesture.target?.body) return;
+  const posA = new THREE.Vector3();
+  const posB = new THREE.Vector3();
+  const quatA = new THREE.Quaternion();
+  const quatB = new THREE.Quaternion();
+  getWorldPose(gesture.a.poseObject, posA, quatA);
+  getWorldPose(gesture.b.poseObject, posB, quatB);
+
+  const currentDistance = Math.max(0.04, posA.distanceTo(posB));
+  const requestedScale = gesture.initialScale * currentDistance / gesture.initialDistance;
+  applyObjectScale(requestedScale, false);
+
+  const midpoint = posA.clone().add(posB).multiplyScalar(0.5);
+  const nextPos = midpoint.add(gesture.centerOffset);
+  const dt = Math.max(0.008, Math.min(0.05, (now - gesture.lastTime) / 1000));
+  const objectVelocity = nextPos.clone().sub(gesture.lastObjectPosition).multiplyScalar(1 / dt).clampLength(0, 7);
+  gesture.a.linearVelocity.copy(objectVelocity);
+  gesture.b.linearVelocity.copy(objectVelocity);
+  gesture.a.angularVelocity.set(0, 0, 0);
+  gesture.b.angularVelocity.set(0, 0, 0);
+  gesture.lastObjectPosition.copy(nextPos);
+  gesture.lastTime = now;
+
+  const body = gesture.target.body;
+  body.setNextKinematicTranslation({ x: nextPos.x, y: nextPos.y, z: nextPos.z });
+  body.setNextKinematicRotation({
+    x: gesture.initialQuaternion.x,
+    y: gesture.initialQuaternion.y,
+    z: gesture.initialQuaternion.z,
+    w: gesture.initialQuaternion.w
+  });
+}
+
 function updateHeldBox(now) {
+  if (scaleGesture) {
+    updateTwoHandScale(now);
+    return;
+  }
   const state = heldBy;
   if (!state || !state.holding) return;
   const target = state.grabbedCube;
@@ -963,9 +1130,12 @@ function updateXRLocomotion(frameDt, xrFrame) {
 
 document.getElementById('reset').addEventListener('click', () => {
   if (heldBy) { heldBy.holding = false; heldBy.inputKind = null; heldBy.grabbedCube = null; heldBy = null; }
+  if (secondHolder) { secondHolder.holding = false; secondHolder.inputKind = null; secondHolder.grabbedCube = null; secondHolder = null; }
+  scaleGesture = null;
   for (const state of [...controllerStates, ...handStates]) { state.holding = false; state.inputKind = null; state.grabbedCube = null; }
   mouseGrab.active = false;
   mouseGrab.cube = null;
+  applyObjectScale(1, true);
   locomotion.offset.set(0, 0, 0);
   applyReferenceOffset();
   boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
@@ -975,7 +1145,7 @@ document.getElementById('reset').addEventListener('click', () => {
   boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.wakeUp();
   syncVisual();
-  setStatus('Scene reset. The single 3D model is back in front of you and ready to grab.');
+  setStatus('Scene reset. The single 3D model is back at its original size and ready to grab. Use both hands to resize it.');
 });
 
 function setPassthroughVisualMode(enabled) {
@@ -1030,7 +1200,13 @@ renderer.xr.addEventListener('sessionend', () => {
   setPassthroughVisualMode(false);
   requestedSessionMode = 'immersive-vr';
   setDesktopCamera();
-  if (heldBy) endXRGrab(heldBy);
+  if (scaleGesture) {
+    const releaseState = scaleGesture.a || scaleGesture.b;
+    const target = scaleGesture.target;
+    for (const state of [scaleGesture.a, scaleGesture.b]) { if (state) { state.holding = false; state.inputKind = null; state.grabbedCube = null; } }
+    scaleGesture = null; secondHolder = null; heldBy = null;
+    releaseTargetWithState(target, releaseState);
+  } else if (heldBy) endXRGrab(heldBy);
   locomotion.baseReferenceSpace = null;
   locomotion.offset.set(0, 0, 0);
   guardianReferenceSpace = null;
@@ -1060,7 +1236,7 @@ window.addEventListener('resize', () => {
 });
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Loading woman_wearing_swimsuit.glb… keep it in the same repository folder as index265.html.');
+setStatus('Loading woman_wearing_swimsuit.glb… keep it beside index265.html. Grab with one hand; use both hands to resize.');
 renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
