@@ -41,12 +41,12 @@
 <div id="hud">
   <div class="panel">
     <h1>Wood Cube VR · Domino Lab</h1>
-    <div id="summary">Grab the solid 34 cm wooden cube in front of you and throw it into a line of 20 matching cubes farther away. The cubes topple in a domino-like chain and bounce on impact.</div>
+    <div id="summary">Grab the solid 34 cm wooden cube in front of you and throw it into a 20-cube wooden pyramid. The stack topples through collisions and a light domino assist, with realistic gravity and a lively bounce.</div>
     <div id="toolbar"><span id="vr-slot"></span><button id="reset" type="button">Reset scene</button></div>
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: pinch thumb and index finger, or use controller grip/trigger, to grab the near cube. Throw it forward into the distant line. Desktop: click and drag the near cube, then release to throw.</div>
+<div id="hint">Quest: hold the trigger or grip to grab the near cube; with hand tracking, pinch thumb and index finger. Use the LEFT thumbstick to walk relative to where you look. Throw the cube into the 20-cube pyramid. Desktop: click and drag to throw.</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -213,11 +213,11 @@ boxVisual.add(mainCubeMesh);
 scene.add(boxVisual);
 
 // The near cube starts within a natural reaching distance in front of the player.
-const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.90 };
+const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.78 };
 let boxBody;
 const dominoCubes = [];
 const DOMINO_COUNT = 20;
-const DOMINO_START_Z = -3.0;
+const DOMINO_START_Z = -4.75;
 const DOMINO_SPACING = CUBE_SIZE + 0.015;
 
 function createDynamicCubeBody(position) {
@@ -245,43 +245,63 @@ function createBoxBody() {
 }
 createBoxBody();
 
-// Build a straight line of 20 solid cubes running away from the player.
-// A small 1.5 cm gap lets each cube move before it nudges the next one.
-for (let i = 0; i < DOMINO_COUNT; i++) {
-  const position = {
-    x: 0,
-    y: HALF_CUBE + 0.002,
-    z: DOMINO_START_Z - i * DOMINO_SPACING
-  };
-  const visual = new THREE.Mesh(cubeGeometry, boxMat);
-  visual.position.set(position.x, position.y, position.z);
-  visual.castShadow = true;
-  visual.receiveShadow = true;
-  scene.add(visual);
-  const body = createDynamicCubeBody(position);
-  dominoCubes.push({ visual, body, initial: { ...position }, chainTriggered: false });
+// Build 20 solid cubes into a five-row, one-cube-deep pyramid: 6 + 5 + 4 + 3 + 2.
+// Each upper row is centred over the seams of the row below, like a brick stack.
+const pyramidRows = [6, 5, 4, 3, 2];
+const pyramidIndex = new Map();
+for (let row = 0; row < pyramidRows.length; row++) {
+  const count = pyramidRows[row];
+  for (let col = 0; col < count; col++) {
+    const position = {
+      x: (col - (count - 1) / 2) * CUBE_SIZE,
+      y: HALF_CUBE + row * CUBE_SIZE + 0.002,
+      z: DOMINO_START_Z
+    };
+    const visual = new THREE.Mesh(cubeGeometry, boxMat);
+    visual.position.set(position.x, position.y, position.z);
+    visual.castShadow = true;
+    visual.receiveShadow = true;
+    scene.add(visual);
+    const body = createDynamicCubeBody(position);
+    const cube = { visual, body, initial: { ...position }, chainTriggered: false, row, col, neighbors: [] };
+    dominoCubes.push(cube);
+    pyramidIndex.set(`${row}:${col}`, cube);
+  }
+}
+// Connect adjacent blocks and the blocks immediately above/below them for a gentle collapse assist.
+for (const cube of dominoCubes) {
+  const { row, col } = cube;
+  const keys = [
+    `${row}:${col - 1}`, `${row}:${col + 1}`,
+    `${row - 1}:${col}`, `${row - 1}:${col + 1}`,
+    `${row + 1}:${col - 1}`, `${row + 1}:${col}`
+  ];
+  for (const key of keys) {
+    const neighbor = pyramidIndex.get(key);
+    if (neighbor && neighbor !== cube && !cube.neighbors.includes(neighbor)) cube.neighbors.push(neighbor);
+  }
 }
 
-// A light-touch domino assist helps the chain topple reliably on a Quest's limited frame budget.
-// Collisions and motion remain Rapier rigid-body physics; this impulse adds a small forward tip
-// once a cube has visibly started moving into the next one.
+// A small assist helps a struck cube pass motion to physically adjacent pyramid cubes.
+// Rapier remains responsible for all collisions and rigid-body motion.
 function updateDominoChain() {
-  for (let i = 0; i < dominoCubes.length - 1; i++) {
-    const current = dominoCubes[i];
+  for (const current of dominoCubes) {
     if (current.chainTriggered) continue;
     const p = current.body.translation();
     const v = current.body.linvel();
-    const movedForward = current.initial.z - p.z > CUBE_SIZE * 0.075;
-    if (movedForward && v.z < -0.12) {
+    const movedBack = current.initial.z - p.z > CUBE_SIZE * 0.075;
+    if (movedBack && v.z < -0.10) {
       current.chainTriggered = true;
-      const next = dominoCubes[i + 1].body;
-      next.applyImpulse({ x: 0, y: 0, z: -0.32 }, true);
-      next.applyTorqueImpulse({ x: -0.032, y: 0, z: 0 }, true);
+      for (const neighbor of current.neighbors) {
+        neighbor.body.applyImpulse({ x: 0, y: 0, z: -0.095 }, true);
+        neighbor.body.applyTorqueImpulse({ x: -0.024, y: 0, z: 0 }, true);
+      }
     }
   }
 }
 
-// XR input. Controller grips and tracked hands are scene siblings, so both share the same origin as the box.
+// XR controller and hand input. The trigger/grip polling below is a fallback for browsers
+// that dispatch select/squeeze events differently; tracked hands use measured fingertip distance.
 const controllerFactory = new XRControllerModelFactory();
 const handFactory = new XRHandModelFactory();
 const controllerStates = [];
@@ -289,6 +309,7 @@ const handStates = [];
 const tempPos = new THREE.Vector3();
 const tempQuat = new THREE.Quaternion();
 let heldBy = null;
+const MAX_GRAB_DISTANCE = 1.65;
 
 function getWorldPose(obj, pos, quat) {
   obj.updateWorldMatrix(true, false);
@@ -296,11 +317,16 @@ function getWorldPose(obj, pos, quat) {
   obj.getWorldQuaternion(quat);
 }
 function beginXRGrab(state, inputKind) {
-  if (state.holding || heldBy || mouseGrab.active || !boxBody) return;
+  if (state.holding || heldBy || mouseGrab.active || !boxBody) return false;
   getWorldPose(state.poseObject, tempPos, tempQuat);
-  if (tempPos.distanceTo(boxVisual.position) > 1.05) {
-    setStatus(state.kind === 'hand' ? 'Move your pinching hand closer to the box.' : 'Move your controller closer to the box, then squeeze or press trigger.');
-    return;
+  const distance = tempPos.distanceTo(boxVisual.position);
+  if (distance > MAX_GRAB_DISTANCE) {
+    const now = performance.now();
+    if (now - (state.lastRejectStatus || 0) > 1200) {
+      setStatus(`Move closer to the cube to grab it (${distance.toFixed(1)} m away).`);
+      state.lastRejectStatus = now;
+    }
+    return false;
   }
   state.holding = true;
   state.inputKind = inputKind;
@@ -316,7 +342,8 @@ function beginXRGrab(state, inputKind) {
   boxBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
   boxBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  setStatus(state.kind === 'hand' ? 'Pinch held. Move your hand; release to throw the cube.' : 'Cube grabbed. Move your hand; release grip or trigger to throw.');
+  setStatus(state.kind === 'hand' ? 'Pinch detected. Move your hand, then release to throw.' : 'Cube grabbed. Move your hand; release trigger or grip to throw.');
+  return true;
 }
 function endXRGrab(state) {
   if (!state.holding) return;
@@ -336,57 +363,70 @@ function makeState(poseObject, kind) {
     poseObject, kind, holding: false, inputKind: null,
     offsetPos: new THREE.Vector3(), offsetQuat: new THREE.Quaternion(),
     lastPos: new THREE.Vector3(), lastQuat: new THREE.Quaternion(),
-    linearVelocity: new THREE.Vector3(), angularVelocity: new THREE.Vector3(), lastTime: 0
+    linearVelocity: new THREE.Vector3(), angularVelocity: new THREE.Vector3(), lastTime: 0,
+    lastAttempt: 0, lastRejectStatus: 0, lastButtonDown: false, pinching: false
   };
 }
 for (let i = 0; i < 2; i++) {
   const controller = renderer.xr.getController(i);
   const grip = renderer.xr.getControllerGrip(i);
   const hand = renderer.xr.getHand(i);
+  controller.visible = false;
+  grip.visible = false;
+  hand.visible = false;
   scene.add(controller, grip, hand);
-  const model = controllerFactory.createControllerModel(grip);
-  grip.add(model);
-  const handModel = handFactory.createHandModel(hand, 'mesh');
-  hand.add(handModel);
-  const rayGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
-  const ray = new THREE.Line(rayGeom, new THREE.LineBasicMaterial({ color: i === 0 ? 0x91e2c2 : 0xe6c17d, transparent: true, opacity: .45 }));
+  grip.add(controllerFactory.createControllerModel(grip));
+  hand.add(handFactory.createHandModel(hand, 'mesh'));
+
+  const rayGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)
+  ]);
+  const ray = new THREE.Line(rayGeom, new THREE.LineBasicMaterial({
+    color: i === 0 ? 0x91e2c2 : 0xe6c17d, transparent: true, opacity: .45
+  }));
   ray.scale.z = 2.0;
   controller.add(ray);
 
   const cState = makeState(grip, 'controller');
+  cState.controllerObject = controller;
+  cState.handedness = i === 0 ? 'left' : 'right';
+  controller.addEventListener('selectstart', () => beginXRGrab(cState, 'select'));
+  controller.addEventListener('selectend', () => { if (cState.inputKind === 'select') endXRGrab(cState); });
   controller.addEventListener('squeezestart', () => beginXRGrab(cState, 'squeeze'));
   controller.addEventListener('squeezeend', () => { if (cState.inputKind === 'squeeze') endXRGrab(cState); });
-  controller.addEventListener('selectstart', () => { if (!cState.holding) beginXRGrab(cState, 'select'); });
-  controller.addEventListener('selectend', () => { if (cState.inputKind === 'select') endXRGrab(cState); });
   controller.addEventListener('connected', (event) => {
-    const isHandInput = Boolean(event.data && event.data.hand);
-    grip.visible = !isHandInput;
+    const source = event.data;
+    controller.userData.inputSource = source;
+    const isHandInput = Boolean(source && source.hand);
     controller.visible = !isHandInput;
+    grip.visible = !isHandInput;
     hand.visible = isHandInput;
   });
   controller.addEventListener('disconnected', () => {
-    grip.visible = false;
+    controller.userData.inputSource = null;
     controller.visible = false;
+    grip.visible = false;
     hand.visible = false;
     if (cState.holding) endXRGrab(cState);
+    cState.lastButtonDown = false;
   });
   controllerStates.push(cState);
 
-  // WebXR raises pinch events for tracked hands. The grab anchor is updated to the thumb/index fingertip midpoint.
   const anchor = new THREE.Group();
   scene.add(anchor);
   const hState = makeState(anchor, 'hand');
   hState.hand = hand;
   hState.anchor = anchor;
-  hand.addEventListener('pinchstart', () => beginXRGrab(hState, 'pinch'));
-  hand.addEventListener('pinchend', () => { if (hState.inputKind === 'pinch') endXRGrab(hState); });
   hand.addEventListener('connected', (event) => {
-    const isHandInput = Boolean(event.data && event.data.hand);
-    hand.visible = isHandInput;
-    if (isHandInput) { grip.visible = false; controller.visible = false; }
+    if (event.data && event.data.hand) {
+      hand.visible = true;
+      grip.visible = false;
+      controller.visible = false;
+    }
   });
   hand.addEventListener('disconnected', () => {
     hand.visible = false;
+    hState.pinching = false;
     if (hState.holding) endXRGrab(hState);
   });
   handStates.push(hState);
@@ -406,11 +446,53 @@ function updateHandAnchors() {
     thumb.getWorldPosition(tempPos);
     const thumbPos = tempPos.clone();
     index.getWorldPosition(tempPos);
-    state.anchor.position.copy(thumbPos).add(tempPos).multiplyScalar(.5);
+    const indexPos = tempPos.clone();
+    state.anchor.position.copy(thumbPos).add(indexPos).multiplyScalar(0.5);
     if (wrist && wrist.visible) {
       wrist.updateWorldMatrix(true, false);
       wrist.getWorldQuaternion(state.anchor.quaternion);
     }
+    const pinchNow = thumbPos.distanceTo(indexPos) < 0.035;
+    if (pinchNow) {
+      if (!state.holding && !heldBy && performance.now() - state.lastAttempt > 180) {
+        state.lastAttempt = performance.now();
+        beginXRGrab(state, 'pinch');
+      }
+    } else if (state.holding && state.inputKind === 'pinch') {
+      endXRGrab(state);
+    }
+    state.pinching = pinchNow;
+  }
+}
+
+function updateControllerGrabPolling(now) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  const sources = Array.from(session.inputSources || []);
+  for (const state of controllerStates) {
+    let source = state.controllerObject.userData.inputSource;
+    if (!source || source.handedness !== state.handedness) {
+      source = sources.find(s => s.handedness === state.handedness && s.gamepad && !s.hand);
+    }
+    if (!source || source.hand || !source.gamepad) {
+      if (state.holding && state.inputKind === 'poll') endXRGrab(state);
+      state.lastButtonDown = false;
+      continue;
+    }
+    const buttons = source.gamepad.buttons || [];
+    const trigger = buttons[0];
+    const squeeze = buttons[1];
+    const down = Boolean(
+      (trigger && (trigger.pressed || trigger.value > 0.58)) ||
+      (squeeze && (squeeze.pressed || squeeze.value > 0.58))
+    );
+    if (down && !state.holding && !heldBy && now - state.lastAttempt > 180) {
+      state.lastAttempt = now;
+      beginXRGrab(state, 'poll');
+    } else if (!down && state.holding && state.inputKind === 'poll') {
+      endXRGrab(state);
+    }
+    state.lastButtonDown = down;
   }
 }
 
@@ -502,9 +584,89 @@ function updateHeldBox(now) {
   boxBody.setNextKinematicRotation({ x: nextQuat.x, y: nextQuat.y, z: nextQuat.z, w: nextQuat.w });
 }
 
+// Smooth joystick locomotion via an offset XR reference space. This moves the tracked
+// viewpoint and controllers together without moving physics objects away from their colliders.
+const locomotion = {
+  baseReferenceSpace: null,
+  offset: new THREE.Vector3(),
+  speed: 1.7,
+  lastStatusAt: 0
+};
+const locomotionForward = new THREE.Vector3();
+const locomotionRight = new THREE.Vector3();
+const locomotionMove = new THREE.Vector3();
+const locomotionQuaternion = new THREE.Quaternion();
+function applyReferenceOffset() {
+  if (!locomotion.baseReferenceSpace || !renderer.xr.isPresenting) return;
+  const transform = new XRRigidTransform(
+    { x: locomotion.offset.x, y: locomotion.offset.y, z: locomotion.offset.z },
+    { x: 0, y: 0, z: 0, w: 1 }
+  );
+  renderer.xr.setReferenceSpace(locomotion.baseReferenceSpace.getOffsetReferenceSpace(transform));
+}
+function applyDeadzone(value) {
+  const deadzone = 0.16;
+  if (Math.abs(value) < deadzone) return 0;
+  return Math.sign(value) * (Math.abs(value) - deadzone) / (1 - deadzone);
+}
+function getThumbstick(source) {
+  const axes = source && source.gamepad && source.gamepad.axes;
+  if (!axes || axes.length < 2) return { x: 0, y: 0 };
+  // The xr-standard layout reserves axes 0–1 for the touchpad and 2–3 for the thumbstick.
+  const x = axes.length >= 4 ? axes[2] : axes[0];
+  const y = axes.length >= 4 ? axes[3] : axes[1];
+  return { x: applyDeadzone(x || 0), y: applyDeadzone(y || 0) };
+}
+function updateXRLocomotion(frameDt, xrFrame) {
+  const session = renderer.xr.getSession();
+  if (!session || !xrFrame || !locomotion.baseReferenceSpace) return;
+  let viewerPose;
+  try { viewerPose = xrFrame.getViewerPose(locomotion.baseReferenceSpace); } catch { return; }
+  if (!viewerPose) return;
+  const leftSource = Array.from(session.inputSources || []).find(s => s.handedness === 'left' && s.gamepad && !s.hand);
+  if (!leftSource) return;
+  const stick = getThumbstick(leftSource);
+  if (Math.abs(stick.x) < 0.001 && Math.abs(stick.y) < 0.001) return;
+
+  const q = viewerPose.transform.orientation;
+  locomotionQuaternion.set(q.x, q.y, q.z, q.w).normalize();
+  locomotionForward.set(0, 0, -1).applyQuaternion(locomotionQuaternion);
+  locomotionForward.y = 0;
+  if (locomotionForward.lengthSq() > 0.0001) locomotionForward.normalize();
+  locomotionRight.set(1, 0, 0).applyQuaternion(locomotionQuaternion);
+  locomotionRight.y = 0;
+  if (locomotionRight.lengthSq() > 0.0001) locomotionRight.normalize();
+
+  // Pushing the left stick up yields a negative Y axis value.
+  locomotionMove.copy(locomotionRight).multiplyScalar(stick.x)
+    .addScaledVector(locomotionForward, -stick.y);
+  if (locomotionMove.lengthSq() > 1) locomotionMove.normalize();
+  locomotionMove.multiplyScalar(locomotion.speed * frameDt);
+  if (locomotionMove.lengthSq() < 1e-7) return;
+
+  const nextOffset = locomotion.offset.clone().sub(locomotionMove);
+  const physicalHead = viewerPose.transform.position;
+  const virtualX = physicalHead.x - nextOffset.x;
+  const virtualZ = physicalHead.z - nextOffset.z;
+  // Keep the player inside the physical room bounds, with a margin from the walls.
+  if (virtualX < -3.45 || virtualX > 3.45 || virtualZ < -9.4 || virtualZ > 4.0) {
+    const now = performance.now();
+    if (now - locomotion.lastStatusAt > 1500) {
+      setStatus('Room boundary reached. Use the left thumbstick to move back inside.');
+      locomotion.lastStatusAt = now;
+    }
+    return;
+  }
+  locomotion.offset.copy(nextOffset);
+  applyReferenceOffset();
+}
+
 document.getElementById('reset').addEventListener('click', () => {
   if (heldBy) { heldBy.holding = false; heldBy.inputKind = null; heldBy = null; }
+  for (const state of [...controllerStates, ...handStates]) { state.holding = false; state.inputKind = null; }
   mouseGrab.active = false;
+  locomotion.offset.set(0, 0, 0);
+  applyReferenceOffset();
   boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
   boxBody.setTranslation(initial, true);
   boxBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -521,18 +683,22 @@ document.getElementById('reset').addEventListener('click', () => {
     cube.body.wakeUp();
   }
   syncVisual();
-  setStatus('Scene reset. One solid cube ready; 20 domino cubes ahead. Gravity and bounce are active.');
+  setStatus('Scene reset. One grab cube ready; 20 cubes stacked as a pyramid. Gravity and bounce are active.');
 });
 
 renderer.xr.addEventListener('sessionstart', () => {
   camera.position.set(0, 0, 0);
   camera.rotation.set(0, 0, 0);
-  setStatus('VR active. Grab the near cube, then throw it forward into the line of 20 cubes.');
+  locomotion.baseReferenceSpace = renderer.xr.getReferenceSpace();
+  locomotion.offset.set(0, 0, 0);
+  setStatus('VR active. Squeeze trigger/grip to grab; left thumbstick moves around the room.');
 });
 renderer.xr.addEventListener('sessionend', () => {
   setDesktopCamera();
   if (heldBy) endXRGrab(heldBy);
-  setStatus('Desktop preview. Drag the near cube with the mouse, then throw it toward the row.');
+  locomotion.baseReferenceSpace = null;
+  locomotion.offset.set(0, 0, 0);
+  setStatus('Desktop preview. Drag the near cube with the mouse, then throw it into the pyramid.');
 });
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -542,11 +708,15 @@ window.addEventListener('resize', () => {
 });
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Ready. Solid 1 kg cube in reach; 20 domino cubes ahead. Gravity: 9.81 m/s².');
-renderer.setAnimationLoop(now => {
+setStatus('Ready. Solid 1 kg cube in reach; 20 cubes stacked as a pyramid. Gravity: 9.81 m/s².');
+renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
-  if (renderer.xr.isPresenting) updateHandAnchors();
+  if (renderer.xr.isPresenting) {
+    updateXRLocomotion(frameDt, xrFrame);
+    updateControllerGrabPolling(now);
+    updateHandAnchors();
+  }
   if (!mouseGrab.active) updateHeldBox(now);
   accumulator += frameDt;
   const fixedDt = 1 / 60;
