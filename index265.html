@@ -55,10 +55,10 @@
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Only the front chest deforms while moving; the back stays unchanged and the model returns to its original shape at the default chest-gravity setting. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
+<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Only the lower front chest deforms while moving; rear-facing vertices are excluded and the model returns to its original shape at default chest gravity. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
 <div id="desktop-tuning" class="panel" aria-label="Soft chest and physics tuning">
   <div class="tune-title">SOFT CHEST & PHYSICS</div>
-  <p class="tune-copy">These controls are also available on a world-anchored panel beside the model inside VR/Passthrough. The chest mask affects only the front surface; the back stays unchanged.</p>
+  <p class="tune-copy">These controls are also available on a world-anchored panel beside the model inside VR/Passthrough. The lower chest mask is biased toward forward-facing surface normals; rear-facing vertices are excluded.</p>
   <div class="tune-row"><div class="tune-label"><label for="chestResponseInput">Chest response</label><output id="chestResponseValue">1.00×</output></div><input id="chestResponseInput" type="range" min="0" max="2" step="0.05" value="1" /></div>
   <div class="tune-row"><div class="tune-label"><label for="chestStiffnessInput">Spring stiffness</label><output id="chestStiffnessValue">46</output></div><input id="chestStiffnessInput" type="range" min="10" max="100" step="1" value="46" /></div>
   <div class="tune-row"><div class="tune-label"><label for="chestDampingInput">Damping</label><output id="chestDampingValue">7.8</output></div><input id="chestDampingInput" type="range" min="0.5" max="16" step="0.1" value="7.8" /></div>
@@ -797,11 +797,15 @@ function prepareSoftTissueDeformation(clone) {
   const widthHalf = Math.max(rootSize.x * 0.5, 1e-5);
   const height = Math.max(rootSize.y, 1e-5);
   const depthHalf = Math.max(rootSize.z * 0.5, 1e-5);
-  softTissue.chestCenterY = (rootBounds.min.y + height * 0.665 - rootCenter.y) * noraModelScale;
+  // The previous mask centred near 66.5% of total model height, which placed the
+  // strongest motion too close to the neck/head on this GLB. Move the spring centre down
+  // to the middle of the chest and use a narrower vertical band below the shoulder line.
+  const CHEST_CENTER_HEIGHT = 0.535;
+  softTissue.chestCenterY = (rootBounds.min.y + height * CHEST_CENTER_HEIGHT - rootCenter.y) * noraModelScale;
 
-  // Models arrive with different forward-axis conventions. Infer which Z side is the
-  // front chest from the central upper-torso envelope instead of assuming +Z. This avoids
-  // accidentally masking the chest away entirely when a GLB is authored facing -Z.
+  // Infer which Z side is the front from the central, lower chest region itself. Avoid
+  // including the head/neck in this test: the nose can protrude and incorrectly bias the
+  // front-axis estimate upward.
   const positiveChestDepths = [];
   const negativeChestDepths = [];
   for (const entry of entries) {
@@ -810,10 +814,10 @@ function prepareSoftTissueDeformation(clone) {
       const k = i * 3;
       const yNorm = (entry.rootPositions[k + 1] - rootBounds.min.y) / height;
       const xNorm = Math.abs((entry.rootPositions[k] - rootCenter.x) / widthHalf);
-      if (yNorm < 0.48 || yNorm > 0.80 || xNorm > 0.56) continue;
+      if (yNorm < 0.42 || yNorm > 0.66 || xNorm > 0.54) continue;
       const signedDepth = (entry.rootPositions[k + 2] - rootCenter.z) / depthHalf;
-      if (signedDepth > 0.08) positiveChestDepths.push(signedDepth);
-      else if (signedDepth < -0.08) negativeChestDepths.push(-signedDepth);
+      if (signedDepth > 0.06) positiveChestDepths.push(signedDepth);
+      else if (signedDepth < -0.06) negativeChestDepths.push(-signedDepth);
     }
   }
   const percentile = (values, p) => {
@@ -841,14 +845,19 @@ function prepareSoftTissueDeformation(clone) {
 
       const yNorm = (entry.rootPositions[k + 1] - rootBounds.min.y) / height;
       const xNorm = Math.abs((entry.rootPositions[k] - rootCenter.x) / widthHalf);
-      // Chest-only vertical and lateral envelope. Fade broadly through the chest,
-      // but keep zero-weight vertices—including the complete rear surface—untouched.
-      const vertical = THREE.MathUtils.smoothstep(yNorm, 0.48, 0.59) *
-        (1 - THREE.MathUtils.smoothstep(yNorm, 0.74, 0.83));
-      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.24, 0.64);
+      // Localise the effect to the lower front chest: the strongest weights are between
+      // 48% and 58% of model height, with a smooth falloff below and above. The top edge
+      // fades out before the shoulder/neck region, avoiding the earlier head-high bounce.
+      const vertical = THREE.MathUtils.smoothstep(yNorm, 0.41, 0.48) *
+        (1 - THREE.MathUtils.smoothstep(yNorm, 0.58, 0.66));
+      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.22, 0.57);
       const signedFrontDepth = ((entry.rootPositions[k + 2] - rootCenter.z) / depthHalf) * softTissue.frontSign;
-      const frontOnly = THREE.MathUtils.smoothstep(signedFrontDepth, 0.025, 0.40);
-      weights[i] = vertical * lateral * frontOnly;
+      const frontDepthWeight = THREE.MathUtils.smoothstep(signedFrontDepth, 0.015, 0.32);
+      // Add a front-facing-normal mask as well as the depth mask. Rear-facing and side
+      // vertices receive zero displacement; their original normals are restored below.
+      const frontNormalDot = entry.rootNormals[k + 2] * softTissue.frontSign;
+      const frontNormalWeight = THREE.MathUtils.smoothstep(frontNormalDot, 0.05, 0.50);
+      weights[i] = vertical * lateral * frontDepthWeight * frontNormalWeight;
       if (weights[i] > 0.03) softTissue.weightedVertexCount++;
     }
 
@@ -859,7 +868,7 @@ function prepareSoftTissueDeformation(clone) {
 
     softTissue.parts.push({ ...entry, normalizedRootPositions, weights });
   }
-  console.info(`Soft-tissue mask prepared across ${softTissue.parts.length} GLB mesh(es); ${softTissue.weightedVertexCount} front-chest vertices, forward side ${softTissue.frontSign > 0 ? '+Z' : '-Z'}.`);
+  console.info(`Soft-tissue mask prepared across ${softTissue.parts.length} GLB mesh(es); ${softTissue.weightedVertexCount} lower-front-chest vertices, forward side ${softTissue.frontSign > 0 ? '+Z' : '-Z'}. Rear-facing/side vertices are excluded.`);
 }
 
 function decorateNoraMeshes(root) {
@@ -1050,7 +1059,7 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
     }
     resetSoftTissueDynamics(false);
     setStatus(softTissue.weightedVertexCount > 20
-      ? `3D model loaded. Front-chest soft motion is active (${softTissue.weightedVertexCount} weighted vertices; rear vertices are unchanged).`
+      ? `3D model loaded. Lower-front-chest soft motion is active (${softTissue.weightedVertexCount} weighted vertices; rear-facing vertices are excluded).`
       : `3D model loaded, but only ${softTissue.weightedVertexCount} chest vertices matched the soft-motion mask. Check the browser console if chest movement remains invisible.`);
     console.info(`woman_wearing_swimsuit.glb loaded. Model normalized to ${CUBE_SIZE.toFixed(2)} m maximum size.`);
   } catch (error) {
