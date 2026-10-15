@@ -212,27 +212,43 @@ addTrim(7.9, .12, .1, 0, .06, -10.41);
 await RAPIER.init();
 const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 world.timestep = 1 / 60;
+// Keep the room walls and the floor on separate fixed bodies. The Quest floor-registration
+// step is allowed to move the ground only; it must never move the wall colliders with it.
 const fixedBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-// Wide fallback ground collider. In passthrough, this is aligned to Quest's detected floor plane.
-// The broad invisible surface keeps the single thrown model from falling through the virtual floor.
+const floorBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+// Robust ground slab: its TOP surface is exactly at floor level (y=0 initially).
+// A deeper slab is more forgiving of high-speed drops while preserving the same contact height.
+const FLOOR_HALF_THICKNESS = 0.20;
 const floorCollider = world.createCollider(
-  RAPIER.ColliderDesc.cuboid(15, .05, 15)
-    .setTranslation(0, -.05, 0)
-    .setFriction(.82)
-    .setRestitution(.65),
-  fixedBody
+  RAPIER.ColliderDesc.cuboid(25, FLOOR_HALF_THICKNESS, 25)
+    .setTranslation(0, -FLOOR_HALF_THICKNESS, 0)
+    .setFriction(.90)
+    .setRestitution(.68)
+    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max),
+  floorBody
 );
 world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(-3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
 world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
 world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0, 1.575, -10.45).setFriction(.7).setRestitution(.42), fixedBody);
 
-// Physics uses a simple 1 kg cuboid collider for the single imported 3D model.
+// Physics uses a 1 kg cuboid fitted to the imported model's measured local bounds.
 const CUBE_SIZE = 0.34;
 const HALF_CUBE = CUBE_SIZE / 2;
 const MIN_MODEL_SCALE = 0.35;
 const MAX_MODEL_SCALE = 3.5;
 let boxCollider = null;
 let currentPhysicsScale = 1;
+// Until the GLB loads, use cube bounds. After loading, replace these with the measured
+// half-extents of the actual model so the hidden collider matches the visible asset's bounds.
+let modelBaseHalfExtents = new THREE.Vector3(HALF_CUBE, HALF_CUBE, HALF_CUBE);
+const MIN_COLLIDER_HALF_EXTENT = 0.012;
+function getColliderHalfExtents(scaleFactor = 1) {
+  return new THREE.Vector3(
+    Math.max(MIN_COLLIDER_HALF_EXTENT, modelBaseHalfExtents.x * scaleFactor),
+    Math.max(MIN_COLLIDER_HALF_EXTENT, modelBaseHalfExtents.y * scaleFactor),
+    Math.max(MIN_COLLIDER_HALF_EXTENT, modelBaseHalfExtents.z * scaleFactor)
+  );
+}
 const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.78 });
 const cubeGeometry = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
 
@@ -259,8 +275,8 @@ const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.78 };
 let boxBody;
 
 function makeObjectColliderDescriptor(scaleFactor = 1) {
-  const half = HALF_CUBE * scaleFactor;
-  return RAPIER.ColliderDesc.cuboid(half, half, half)
+  const half = getColliderHalfExtents(scaleFactor);
+  return RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
     .setMass(1.0) // Keep the object easy to handle even when enlarged.
     .setFriction(0.68)
     .setRestitution(0.68)
@@ -311,11 +327,10 @@ const starterCube = { visual: boxVisual, get body() { return boxBody; }, initial
 const grabbableCubes = [starterCube];
 
 // Load woman_wearing_swimsuit.glb from the same GitHub Pages directory as index265.html. It is the one
-// visible, movable object. Its physics collider remains a stable 34 cm cube for now.
+// visible, movable object. Its physics collider is fitted to the model's measured bounds.
 const noraLoader = new GLTFLoader();
 let noraTemplate = null;
 let noraModelScale = 1;
-let noraModelCenter = new THREE.Vector3();
 function decorateNoraMeshes(root) {
   root.traverse(node => {
     if (!node.isMesh) return;
@@ -326,12 +341,19 @@ function decorateNoraMeshes(root) {
 }
 function createNoraInstance() {
   const clone = cloneSkeleton(noraTemplate);
-  const sourcePosition = clone.position.clone();
-  clone.scale.multiplyScalar(noraModelScale);
-  clone.position.copy(sourcePosition).multiplyScalar(noraModelScale)
-    .sub(noraModelCenter.clone().multiplyScalar(noraModelScale));
   decorateNoraMeshes(clone);
-  return clone;
+  // Center the complete imported hierarchy inside an outer group. This accounts for any
+  // translation/rotation baked into the GLB root and keeps its visible bounds aligned with
+  // the physical body's center instead of letting the mesh appear to sink below the floor.
+  const holder = new THREE.Group();
+  holder.add(clone);
+  holder.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(holder);
+  const center = bounds.getCenter(new THREE.Vector3());
+  holder.scale.setScalar(noraModelScale);
+  holder.position.copy(center).multiplyScalar(-noraModelScale);
+  holder.updateMatrixWorld(true);
+  return holder;
 }
 function replaceFallbackWithNora(visualRoot) {
   if (!noraTemplate) return;
@@ -348,11 +370,30 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
     if (!Number.isFinite(maxDimension) || maxDimension <= 0.00001) {
       throw new Error('woman_wearing_swimsuit.glb has no measurable 3D geometry.');
     }
-    noraModelCenter.copy(bounds.getCenter(new THREE.Vector3()));
     noraModelScale = CUBE_SIZE / maxDimension;
+    // Use the measured GLB dimensions for its collision bounds; never assume the model is a cube.
+    modelBaseHalfExtents.set(
+      Math.max(size.x * noraModelScale * 0.5, 0.015),
+      Math.max(size.y * noraModelScale * 0.5, 0.015),
+      Math.max(size.z * noraModelScale * 0.5, 0.015)
+    );
     noraTemplate = gltf.scene;
     for (const cube of grabbableCubes) replaceFallbackWithNora(cube.visual);
-    setStatus('woman_wearing_swimsuit.glb loaded. Your single 3D model is ready to grab and throw.');
+    applyObjectScale(boxVisual.scale.x || 1, true);
+    // Place the upright model exactly on the current physics floor after its real bounds are known.
+    // Avoid teleporting it if the user happened to grab it while the GLB was still loading.
+    if (!heldBy && !scaleGesture && !mouseGrab.active) {
+      const current = boxBody.translation();
+      const colliderHalf = getColliderHalfExtents(boxVisual.scale.x || 1);
+      const spawnY = physicalFloorY + colliderHalf.y + 0.002;
+      initial.y = spawnY;
+      boxBody.setTranslation({ x: current.x, y: spawnY, z: current.z }, true);
+      boxBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+      boxBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      syncVisual();
+    }
+    setStatus('woman_wearing_swimsuit.glb loaded. Its measured bounds now drive the floor collider.');
     console.info(`woman_wearing_swimsuit.glb loaded. Model normalized to ${CUBE_SIZE.toFixed(2)} m maximum size.`);
   } catch (error) {
     console.error('Could not prepare woman_wearing_swimsuit.glb:', error);
@@ -444,8 +485,8 @@ function alignPhysicsToPhysicalFloor(targetY) {
   if (physicalFloorDetected) return;
   const delta = targetY - physicalFloorY;
   if (Math.abs(delta) > 0.0005) {
-    // The fixed body's local floor surface is y=0, so translate it to the detected real floor.
-    fixedBody.setTranslation({ x: 0, y: targetY, z: 0 }, true);
+    // The separate floor body's local top surface is y=0, so align only the floor to the detected plane.
+    floorBody.setTranslation({ x: 0, y: targetY, z: 0 }, true);
     const mainPos = boxBody.translation();
     boxBody.setTranslation({ x: mainPos.x, y: mainPos.y + delta, z: mainPos.z }, true);
     initial.y += delta;
@@ -980,6 +1021,44 @@ function syncVisual() {
   boxVisual.position.set(p.x, p.y, p.z);
   boxVisual.quaternion.set(q.x, q.y, q.z, q.w);
 }
+
+// Last-resort floor safety net. Rapier's contact solver and CCD remain the primary physics;
+// this only corrects the object if a browser hitch, tracking jump, or extreme throw leaves it
+// more than 8 mm beneath the actual floor surface. The support height accounts for rotation
+// and current two-hand scale, so corners of a tilted collider cannot slip through the floor.
+let lastFloorSafetyReport = 0;
+function enforceFloorSafetyNet() {
+  if (!boxBody || heldBy || scaleGesture || mouseGrab.active) return;
+  const p = boxBody.translation();
+  const q = boxBody.rotation();
+  const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize();
+  const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(quat);
+  const axisY = new THREE.Vector3(0, 1, 0).applyQuaternion(quat);
+  const axisZ = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
+  const half = getColliderHalfExtents(currentPhysicsScale);
+  const verticalSupport = half.x * Math.abs(axisX.y) + half.y * Math.abs(axisY.y) + half.z * Math.abs(axisZ.y);
+  const minimumCenterY = physicalFloorY + verticalSupport + 0.002;
+  if (p.y >= minimumCenterY - 0.008) return;
+
+  const velocity = boxBody.linvel();
+  const impactSpeed = Math.max(0, -velocity.y);
+  // Apply a controlled rebound for a true floor penetration, but settle tiny impacts quietly.
+  let correctedVy = impactSpeed > 0.65 ? Math.min(5.5, impactSpeed * 0.52) : 0;
+  if (velocity.y > 0.3) correctedVy = velocity.y;
+  boxBody.setTranslation({ x: p.x, y: minimumCenterY, z: p.z }, true);
+  boxBody.setLinvel({ x: velocity.x * 0.98, y: correctedVy, z: velocity.z * 0.98 }, true);
+  const angular = boxBody.angvel();
+  boxBody.setAngvel({ x: angular.x * 0.9, y: angular.y * 0.9, z: angular.z * 0.9 }, true);
+  boxBody.wakeUp();
+
+  const now = performance.now();
+  if (now - lastFloorSafetyReport > 2500) {
+    console.warn('Floor safety net corrected the model to the registered floor. Check floor-registration data if this repeats.');
+    setStatus('Floor safety correction applied. The model has been brought back onto the registered floor.');
+    lastFloorSafetyReport = now;
+  }
+}
+
 function updateTwoHandScale(now) {
   const gesture = scaleGesture;
   if (!gesture || !gesture.a?.holding || !gesture.b?.holding || !gesture.target?.body) return;
@@ -1217,7 +1296,7 @@ renderer.xr.addEventListener('sessionend', () => {
   // Return to the default virtual-room floor when leaving passthrough.
   if (physicalFloorDetected) {
     const delta = -physicalFloorY;
-    fixedBody.setTranslation({ x: 0, y: 0, z: 0 }, true);
+    floorBody.setTranslation({ x: 0, y: 0, z: 0 }, true);
     const mainPos = boxBody.translation();
     boxBody.setTranslation({ x: mainPos.x, y: mainPos.y + delta, z: mainPos.z }, true);
     initial.y += delta;
@@ -1258,6 +1337,7 @@ renderer.setAnimationLoop((now, xrFrame) => {
     steps++;
   }
   if (steps === 4) accumulator = 0;
+  enforceFloorSafetyNet();
   syncVisual();
   renderer.render(scene, camera);
 });
