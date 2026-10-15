@@ -1,0 +1,1258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#171b1e">
+<title>Wood Cube VR — Domino Lab (index265)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #171b1e; color: #f3f0e8; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+  #hud { position: fixed; top: 18px; left: 18px; z-index: 4; width: min(370px, calc(100vw - 36px)); pointer-events: none; }
+  .panel { padding: 16px 17px; border: 1px solid rgba(255,255,255,.13); background: rgba(14,18,20,.78); backdrop-filter: blur(10px); border-radius: 14px; box-shadow: 0 10px 35px rgba(0,0,0,.25); }
+  h1 { font-size: 17px; letter-spacing: .015em; margin: 0 0 8px; font-weight: 650; }
+  #summary { color: #c4c9c7; font-size: 12px; line-height: 1.55; margin-bottom: 12px; }
+  #status { font-size: 12px; line-height: 1.4; color: #e4bd78; margin-top: 9px; min-height: 17px; }
+  #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; pointer-events: auto; }
+  button { border: 1px solid rgba(255,255,255,.2); border-radius: 9px; padding: 9px 12px; color: #f5f2e9; background: #343d3c; cursor: pointer; font-size: 12px; font-weight: 650; }
+  button:hover { background: #46514e; }
+  #reset { background: #765331; }
+  #reset:hover { background: #8b633c; }
+  #hint { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 4; width: max-content; max-width: calc(100vw - 28px); text-align: center; padding: 10px 15px; border-radius: 12px; background: rgba(14,18,20,.78); border: 1px solid rgba(255,255,255,.12); color: #e9e8e0; font-size: 12px; line-height: 1.45; backdrop-filter: blur(10px); pointer-events: none; }
+  #vr-slot, #ar-slot { display: inline-flex; }
+  #vr-slot button, #ar-slot button { position: static !important; margin: 0 !important; width: auto !important; height: auto !important; min-width: 94px; border-radius: 9px !important; font: 650 12px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; padding: 10px 13px !important; color: #17201d !important; background: #d4e7d9 !important; border: 0 !important; }
+  #vr-slot button:disabled, #ar-slot button:disabled { background: #777d78 !important; color: #171b1e !important; }
+  @media (max-width: 560px) { #hud { top: 10px; left: 10px; width: calc(100vw - 20px); } .panel { padding: 12px; } h1 { font-size: 15px; } #hint { bottom: 10px; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud">
+  <div class="panel">
+    <h1>Wood Cube VR · Domino Lab</h1>
+    <div id="summary">Enter VR or Passthrough. All 21 objects use woman_wearing_swimsuit.glb. Grab any model, throw it into the others, and topple the pyramid.</div>
+    <div id="toolbar"><span id="vr-slot"></span><span id="ar-slot"></span><button id="reset" type="button">Reset scene</button></div>
+    <div id="status">Starting 3D scene…</div>
+  </div>
+</div>
+<div id="hint">Quest: point at a imported 3D model and hold trigger/grip to grab; release to throw. Pinch tracked hands to grab. Move with the LEFT thumbstick. Desktop: click and drag any model to throw it.</div>
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { ARButton } from 'three/addons/webxr/ARButton.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs';
+
+const statusEl = document.getElementById('status');
+const stage = document.getElementById('stage');
+const setStatus = (message) => { statusEl.textContent = message; };
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9aacae);
+scene.fog = new THREE.Fog(0x9aacae, 13, 30);
+
+// Desktop camera sits behind the box. During VR, WebXR supplies the headset pose.
+const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.03, 80);
+scene.add(camera);
+const desktopCameraPosition = new THREE.Vector3(0, 1.62, 2.65);
+function setDesktopCamera() {
+  camera.position.copy(desktopCameraPosition);
+  camera.lookAt(0, 0.48, -0.85);
+}
+setDesktopCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+renderer.setClearColor(0x000000, 0);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+stage.appendChild(renderer.domElement);
+
+const vrButton = VRButton.createButton(renderer, {
+  requiredFeatures: ['local-floor'],
+  optionalFeatures: ['hand-tracking', 'bounded-floor']
+});
+vrButton.textContent = 'ENTER VR';
+document.getElementById('vr-slot').appendChild(vrButton);
+
+const arButton = ARButton.createButton(renderer, {
+  requiredFeatures: ['local-floor'],
+  // Quest Browser can expose room surfaces and a Guardian play-area polygon via WebXR.
+  // Keep both optional so Passthrough can still launch if a device/browser lacks one feature.
+  optionalFeatures: ['hand-tracking', 'plane-detection', 'bounded-floor']
+});
+arButton.textContent = 'PASSTHROUGH';
+document.getElementById('ar-slot').appendChild(arButton);
+let requestedSessionMode = 'immersive-vr';
+// Remember which button initiated the session so AR rendering doesn't depend only on browser metadata.
+vrButton.addEventListener('click', () => { requestedSessionMode = 'immersive-vr'; }, true);
+arButton.addEventListener('click', () => { requestedSessionMode = 'immersive-ar'; }, true);
+
+scene.add(new THREE.HemisphereLight(0xe0eaff, 0x5a3b25, 1.9));
+const keyLight = new THREE.DirectionalLight(0xffe0b3, 3.1);
+keyLight.position.set(-3.4, 5.8, 3.5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1536, 1536);
+keyLight.shadow.camera.left = -6;
+keyLight.shadow.camera.right = 6;
+keyLight.shadow.camera.top = 7;
+keyLight.shadow.camera.bottom = -6;
+keyLight.shadow.bias = -0.00025;
+scene.add(keyLight);
+const fillLight = new THREE.PointLight(0xa8c7ff, 25, 13, 2);
+fillLight.position.set(2.8, 2.4, -1.3);
+scene.add(fillLight);
+
+function canvasTexture(width, height, painter, repeatX = 1, repeatY = 1) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  painter(ctx, width, height);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeatX, repeatY);
+  texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
+  return texture;
+}
+let seed = 19831;
+function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+const woodTexture = canvasTexture(768, 512, (ctx, w, h) => {
+  const palette = ['#987046', '#a77a4b', '#8b633e', '#b08452', '#956b42', '#aa7b49'];
+  ctx.fillStyle = '#795431';
+  ctx.fillRect(0, 0, w, h);
+  const plankH = 128;
+  for (let y = 0; y < h; y += plankH) {
+    ctx.fillStyle = palette[Math.floor(rand() * palette.length)];
+    ctx.fillRect(0, y, w, plankH - 3);
+    ctx.fillStyle = 'rgba(44,25,12,.38)';
+    ctx.fillRect(0, y + plankH - 3, w, 3);
+    for (let i = 0; i < 130; i++) {
+      const yy = y + rand() * (plankH - 5), x = rand() * w, span = 20 + rand() * 300;
+      ctx.strokeStyle = rand() > .5 ? 'rgba(49,29,17,.16)' : 'rgba(239,194,128,.15)';
+      ctx.lineWidth = .5 + rand() * 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x, yy);
+      ctx.bezierCurveTo(x + span * .3, yy - 4 + rand() * 8, x + span * .65, yy - 5 + rand() * 10, Math.min(w, x + span), yy + rand() * 3);
+      ctx.stroke();
+    }
+    for (let x = 160 + rand() * 170; x < w; x += 260 + rand() * 180) {
+      ctx.strokeStyle = 'rgba(43,25,13,.2)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, y + 4); ctx.lineTo(x, y + plankH - 6); ctx.stroke();
+      ctx.strokeStyle = 'rgba(242,193,123,.2)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x + 3, y + 4); ctx.lineTo(x + 3, y + plankH - 6); ctx.stroke();
+    }
+  }
+}, 1, 1);
+woodTexture.needsUpdate = true;
+const floorTexture = woodTexture.clone();
+floorTexture.needsUpdate = true;
+floorTexture.repeat.set(4, 5);
+const wallTexture = canvasTexture(256, 256, (ctx, w, h) => {
+  ctx.fillStyle = '#b5b2a5';
+  ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 15000; i++) {
+    const a = rand() * .08;
+    ctx.fillStyle = rand() > .5 ? `rgba(255,246,222,${a})` : `rgba(55,54,47,${a})`;
+    ctx.fillRect(rand() * w, rand() * h, 1 + rand() * 2, 1 + rand() * 2);
+  }
+}, 2, 1);
+const floorMat = new THREE.MeshStandardMaterial({ map: floorTexture, roughness: .78 });
+const plasterMat = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0xe0ddd0, roughness: .96 });
+const trimMat = new THREE.MeshStandardMaterial({ map: woodTexture, color: 0x8e6844, roughness: .72 });
+
+// Room dimensions are in metres. The front stays open for easy access to the box.
+const floor = new THREE.Mesh(new THREE.BoxGeometry(8, .1, 15), floorMat);
+floor.position.set(0, -.05, -3.0);
+floor.receiveShadow = true;
+scene.add(floor);
+const walls = new THREE.Group();
+scene.add(walls);
+const trimGroup = new THREE.Group();
+scene.add(trimGroup);
+function addWall(w, h, d, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), plasterMat);
+  m.position.set(x, y, z); m.receiveShadow = true; walls.add(m); return m;
+}
+addWall(.1, 3.25, 15, -4, 1.575, -3.0);
+addWall(.1, 3.25, 15, 4, 1.575, -3.0);
+addWall(8, 3.25, .1, 0, 1.575, -10.5);
+function addTrim(w, h, d, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), trimMat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; trimGroup.add(m);
+}
+addTrim(.1, .12, 14.9, -3.91, .06, -3.0);
+addTrim(.1, .12, 14.9, 3.91, .06, -3.0);
+addTrim(7.9, .12, .1, 0, .06, -10.41);
+
+await RAPIER.init();
+const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+world.timestep = 1 / 60;
+const fixedBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+// Wide fallback ground collider. In passthrough, this is aligned to Quest's detected floor plane.
+// The broad surface prevents a thrown cube from falling off the old decorative-room footprint.
+const floorCollider = world.createCollider(
+  RAPIER.ColliderDesc.cuboid(15, .05, 15)
+    .setTranslation(0, -.05, 0)
+    .setFriction(.82)
+    .setRestitution(.65),
+  fixedBody
+);
+world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(-3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0, 1.575, -10.45).setFriction(.7).setRestitution(.42), fixedBody);
+
+// Solid wooden cubes: one movable 1 kg cube near the player and 20 matching domino cubes farther away.
+const CUBE_SIZE = 0.34;
+const HALF_CUBE = CUBE_SIZE / 2;
+const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.78 });
+const cubeGeometry = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
+
+// Fallback cubes are shown only until woman_wearing_swimsuit.glb loads, or if the file is missing.
+// Every physical body keeps a stable Group as its visual root, so grab/throw logic works
+// whether the visible object is a fallback cube or the imported imported 3D model.
+function createFallbackCubeMesh() {
+  const mesh = new THREE.Mesh(cubeGeometry, boxMat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.isFallbackCube = true;
+  return mesh;
+}
+function createCubeVisualRoot() {
+  const root = new THREE.Group();
+  root.add(createFallbackCubeMesh());
+  return root;
+}
+
+const boxVisual = createCubeVisualRoot();
+scene.add(boxVisual);
+
+// The near cube starts within a natural reaching distance in front of the player.
+const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.78 };
+let boxBody;
+const dominoCubes = [];
+const DOMINO_COUNT = 20;
+const DOMINO_START_Z = -4.75;
+const DOMINO_SPACING = CUBE_SIZE + 0.015;
+
+function createDynamicCubeBody(position) {
+  const desc = RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(position.x, position.y, position.z)
+    .setLinearDamping(0.025)
+    .setAngularDamping(0.045)
+    .setCanSleep(true)
+    .setCcdEnabled(true);
+  const body = world.createRigidBody(desc);
+  const collider = RAPIER.ColliderDesc.cuboid(HALF_CUBE, HALF_CUBE, HALF_CUBE)
+    .setMass(1.0)
+    .setFriction(0.68)
+    .setRestitution(0.68)
+    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max);
+  world.createCollider(collider, body);
+  return body;
+}
+
+function createBoxBody() {
+  if (boxBody) world.removeRigidBody(boxBody);
+  boxBody = createDynamicCubeBody(initial);
+  boxVisual.position.set(initial.x, initial.y, initial.z);
+  boxVisual.quaternion.identity();
+}
+createBoxBody();
+
+// Build 20 solid cubes into a five-row, one-cube-deep pyramid: 6 + 5 + 4 + 3 + 2.
+// Each upper row is centred over the seams of the row below, like a brick stack.
+const pyramidRows = [6, 5, 4, 3, 2];
+const pyramidIndex = new Map();
+for (let row = 0; row < pyramidRows.length; row++) {
+  const count = pyramidRows[row];
+  for (let col = 0; col < count; col++) {
+    const position = {
+      x: (col - (count - 1) / 2) * CUBE_SIZE,
+      y: HALF_CUBE + row * CUBE_SIZE + 0.002,
+      z: DOMINO_START_Z
+    };
+    const visual = createCubeVisualRoot();
+    visual.position.set(position.x, position.y, position.z);
+    scene.add(visual);
+    const body = createDynamicCubeBody(position);
+    const cube = { visual, body, initial: { ...position }, chainTriggered: false, row, col, neighbors: [] };
+    dominoCubes.push(cube);
+    pyramidIndex.set(`${row}:${col}`, cube);
+  }
+}
+// Connect adjacent blocks and the blocks immediately above/below them for a gentle collapse assist.
+for (const cube of dominoCubes) {
+  const { row, col } = cube;
+  const keys = [
+    `${row}:${col - 1}`, `${row}:${col + 1}`,
+    `${row - 1}:${col}`, `${row - 1}:${col + 1}`,
+    `${row + 1}:${col - 1}`, `${row + 1}:${col}`
+  ];
+  for (const key of keys) {
+    const neighbor = pyramidIndex.get(key);
+    if (neighbor && neighbor !== cube && !cube.neighbors.includes(neighbor)) cube.neighbors.push(neighbor);
+  }
+}
+
+// Every physical cube shares the same interaction system. The starter cube exposes a
+// getter because its Rapier body is stored separately from the pyramid cube records.
+const starterCube = { visual: boxVisual, get body() { return boxBody; }, initial, label: 'starter cube' };
+const grabbableCubes = [starterCube, ...dominoCubes];
+
+// Load woman_wearing_swimsuit.glb from the same GitHub Pages directory as index265.html and use it as the
+// visible model for every physical cube. The physics colliders remain stable 34 cm boxes,
+// which keeps the existing pyramid layout, grabbing, throwing and collisions predictable.
+const noraLoader = new GLTFLoader();
+let noraTemplate = null;
+let noraModelScale = 1;
+let noraModelCenter = new THREE.Vector3();
+function decorateNoraMeshes(root) {
+  root.traverse(node => {
+    if (!node.isMesh) return;
+    node.castShadow = true;
+    node.receiveShadow = true;
+    // Keep the materials embedded in woman_wearing_swimsuit.glb; don't overwrite its own textures.
+  });
+}
+function createNoraInstance() {
+  const clone = cloneSkeleton(noraTemplate);
+  const sourcePosition = clone.position.clone();
+  clone.scale.multiplyScalar(noraModelScale);
+  clone.position.copy(sourcePosition).multiplyScalar(noraModelScale)
+    .sub(noraModelCenter.clone().multiplyScalar(noraModelScale));
+  decorateNoraMeshes(clone);
+  return clone;
+}
+function replaceFallbackWithNora(visualRoot) {
+  if (!noraTemplate) return;
+  visualRoot.clear();
+  visualRoot.add(createNoraInstance());
+}
+noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
+  try {
+    const measured = cloneSkeleton(gltf.scene);
+    measured.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(measured);
+    const size = bounds.getSize(new THREE.Vector3());
+    const maxDimension = Math.max(size.x, size.y, size.z);
+    if (!Number.isFinite(maxDimension) || maxDimension <= 0.00001) {
+      throw new Error('woman_wearing_swimsuit.glb has no measurable 3D geometry.');
+    }
+    noraModelCenter.copy(bounds.getCenter(new THREE.Vector3()));
+    noraModelScale = CUBE_SIZE / maxDimension;
+    noraTemplate = gltf.scene;
+    for (const cube of grabbableCubes) replaceFallbackWithNora(cube.visual);
+    setStatus('woman_wearing_swimsuit.glb loaded. All 21 objects use your model; grabbing, throwing and collisions remain active.');
+    console.info(`woman_wearing_swimsuit.glb loaded. Model normalized to ${CUBE_SIZE.toFixed(2)} m maximum size.`);
+  } catch (error) {
+    console.error('Could not prepare woman_wearing_swimsuit.glb:', error);
+    setStatus('woman_wearing_swimsuit.glb was found but could not be prepared. Check the model file and browser console.');
+  }
+}, undefined, error => {
+  console.error('Could not load ./woman_wearing_swimsuit.glb:', error);
+  setStatus('woman_wearing_swimsuit.glb was not loaded. Upload the file named exactly woman_wearing_swimsuit.glb beside index265.html; showing fallback cubes for now.');
+});
+
+function findClosestGrabbable(position) {
+  let closest = null;
+  let closestDistance = Infinity;
+  for (const cube of grabbableCubes) {
+    if (!cube || !cube.body || !cube.visual) continue;
+    const distance = position.distanceTo(cube.visual.position);
+    if (distance < closestDistance) {
+      closest = cube;
+      closestDistance = distance;
+    }
+  }
+  return { cube: closestDistance <= MAX_GRAB_DISTANCE ? closest : null, distance: closestDistance };
+}
+function getGrabbableFromHit(object) {
+  let node = object;
+  while (node) {
+    const cube = grabbableCubes.find(item => item.visual === node);
+    if (cube) return cube;
+    node = node.parent;
+  }
+  return null;
+}
+
+// Quest room registration: the browser may expose (a) a horizontal plane labelled 'floor'
+// through plane-detection and (b) Guardian boundary points through a bounded-floor space.
+// A large invisible ground collider remains as a fallback if room capture is unavailable.
+let physicalFloorY = 0;
+let physicalFloorDetected = false;
+let guardianReferenceSpace = null;
+let guardianBounds = [];
+let playAreaBoundsRegistered = false;
+let playAreaBoundsSource = '';
+let guardianWallBodies = [];
+let pyramidPlacedForBoundaries = false;
+let roomSessionStartedAt = 0;
+let roomCaptureAttempted = false;
+let planeDetectionStatusAt = 0;
+
+function removeGuardianWallColliders() {
+  for (const body of guardianWallBodies) {
+    try { world.removeRigidBody(body); } catch {}
+  }
+  guardianWallBodies = [];
+}
+
+function createGuardianWallColliders(points) {
+  removeGuardianWallColliders();
+  if (!Array.isArray(points) || points.length < 3) return;
+  // Invisible, tall colliders along the detected safe-play-area perimeter. These are not
+  // intended to replace Meta's own safety Guardian; they keep the simulation objects in-bounds.
+  const halfHeight = 1.5;
+  const thickness = 0.07;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    const dx = b.x - a.x, dz = b.y - a.y;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.12) continue;
+    const midX = (a.x + b.x) * 0.5;
+    const midZ = (a.y + b.y) * 0.5;
+    // A cuboid's local X axis is aligned to the boundary edge.
+    const yaw = Math.atan2(-dz, dx);
+    const rotation = { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
+    const bodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(midX, physicalFloorY + halfHeight, midZ)
+      .setRotation(rotation);
+    const body = world.createRigidBody(bodyDesc);
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(length * 0.5 + thickness, halfHeight, thickness)
+        .setFriction(0.8)
+        .setRestitution(0.25),
+      body
+    );
+    guardianWallBodies.push(body);
+  }
+}
+
+function alignPhysicsToPhysicalFloor(targetY) {
+  if (!Number.isFinite(targetY)) return;
+  // Don't chase minor tracking noise; lock onto the first confirmed floor plane.
+  if (physicalFloorDetected) return;
+  const delta = targetY - physicalFloorY;
+  if (Math.abs(delta) > 0.0005) {
+    // The fixed body's local floor surface is y=0, so translate it to the detected real floor.
+    fixedBody.setTranslation({ x: 0, y: targetY, z: 0 }, true);
+    const mainPos = boxBody.translation();
+    boxBody.setTranslation({ x: mainPos.x, y: mainPos.y + delta, z: mainPos.z }, true);
+    initial.y += delta;
+    for (const cube of dominoCubes) {
+      const p = cube.body.translation();
+      cube.body.setTranslation({ x: p.x, y: p.y + delta, z: p.z }, true);
+      cube.initial.y += delta;
+    }
+    floor.position.y = targetY - 0.05;
+    floor.position.x = 0;
+    floor.position.z = -3.0;
+  }
+  physicalFloorY = targetY;
+  physicalFloorDetected = true;
+  if (playAreaBoundsRegistered && pyramidPlacedForBoundaries) createGuardianWallColliders(guardianBounds);
+  syncVisual();
+  setStatus(`Quest floor registered (${targetY.toFixed(2)} m in WebXR space). Cube collisions are aligned to it.`);
+}
+
+function polygonArea2D(polygon) {
+  if (!polygon || polygon.length < 3) return 0;
+  let area = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    area += (a.x || 0) * (b.y || 0) - (b.x || 0) * (a.y || 0);
+  }
+  return Math.abs(area) * 0.5;
+}
+
+function updateQuestGuardianBounds(xrFrame) {
+  if (!renderer.xr.isPresenting || requestedSessionMode !== 'immersive-ar' || (playAreaBoundsRegistered && playAreaBoundsSource === 'Quest Guardian boundary') || !guardianReferenceSpace || !xrFrame) return;
+  const raw = guardianReferenceSpace.boundsGeometry;
+  if (!raw || raw.length < 3) return;
+  const base = renderer.xr.getReferenceSpace();
+  if (!base) return;
+  let pose;
+  try { pose = xrFrame.getPose(guardianReferenceSpace, base); } catch { return; }
+  if (!pose) return;
+  const origin = pose.transform.position;
+  const orientation = pose.transform.orientation;
+  const q = new THREE.Quaternion(orientation.x, orientation.y, orientation.z, orientation.w);
+  const t = new THREE.Vector3(origin.x, origin.y, origin.z);
+  guardianBounds = Array.from(raw).map(point => {
+    const v = new THREE.Vector3(point.x, 0, point.z).applyQuaternion(q).add(t);
+    return new THREE.Vector2(v.x, v.z);
+  });
+  // Remove a duplicated closing vertex if supplied by the browser.
+  if (guardianBounds.length > 3 && guardianBounds[0].distanceTo(guardianBounds[guardianBounds.length - 1]) < 0.01) guardianBounds.pop();
+  if (guardianBounds.length < 3) { guardianBounds = []; return; }
+  playAreaBoundsRegistered = true;
+  playAreaBoundsSource = 'Quest Guardian boundary';
+  pyramidPlacedForBoundaries = false;
+  const stackFits = positionPyramidInsideDetectedArea(guardianBounds);
+  if (stackFits) {
+    createGuardianWallColliders(guardianBounds);
+    setStatus(`Quest Guardian boundary registered (${guardianBounds.length} edges). Pyramid placed inside it; cubes collide with the perimeter.`);
+  } else {
+    removeGuardianWallColliders();
+    setStatus('Quest Guardian boundary registered, but the safe area is too small for the full-size 20-cube pyramid. Floor tracking stays active; boundary walls are disabled so the stack remains reachable.');
+  }
+}
+
+function registerDetectedFloorPolygon(candidate, base) {
+  // The Quest room floor itself also carries a polygon. Use it as the fallback play-area
+  // outline if the runtime doesn't expose Guardian bounds separately.
+  if (playAreaBoundsRegistered || !candidate || !candidate.plane || !candidate.pose || !candidate.plane.polygon) return;
+  const raw = Array.from(candidate.plane.polygon);
+  if (raw.length < 3 || candidate.area < 2.5) return;
+  const pose = candidate.pose.transform;
+  const origin = pose.position;
+  const orientation = pose.orientation;
+  const q = new THREE.Quaternion(orientation.x, orientation.y, orientation.z, orientation.w);
+  const t = new THREE.Vector3(origin.x, origin.y, origin.z);
+  const points = raw.map(point => {
+    const v = new THREE.Vector3(point.x, point.y, 0).applyQuaternion(q).add(t);
+    return new THREE.Vector2(v.x, v.z);
+  });
+  if (points.length > 3 && points[0].distanceTo(points[points.length - 1]) < 0.01) points.pop();
+  if (points.length < 3) return;
+  guardianBounds = points;
+  playAreaBoundsRegistered = true;
+  playAreaBoundsSource = 'Quest detected floor polygon';
+  pyramidPlacedForBoundaries = false;
+  const stackFits = positionPyramidInsideDetectedArea(guardianBounds);
+  if (stackFits) {
+    createGuardianWallColliders(guardianBounds);
+    setStatus(`Quest physical floor outline registered (${guardianBounds.length} edges). Pyramid placed inside it; cubes collide with the outline.`);
+  } else {
+    removeGuardianWallColliders();
+    setStatus('Quest floor detected, but its mapped polygon is too small for the full-size pyramid. The floor height is aligned; boundary walls are disabled to keep the stack reachable.');
+  }
+}
+
+function updateDetectedFloor(xrFrame, now) {
+  if (!renderer.xr.isPresenting || requestedSessionMode !== 'immersive-ar' || !xrFrame) return;
+  const session = renderer.xr.getSession();
+  if (!session || physicalFloorDetected) return;
+  const base = renderer.xr.getReferenceSpace();
+  if (!base) return;
+  let planes;
+  try { planes = xrFrame.detectedPlanes; } catch { planes = null; }
+  const list = planes ? Array.from(planes) : [];
+  const candidates = [];
+  for (const plane of list) {
+    if (plane.orientation !== 'horizontal') continue;
+    let pose;
+    try { pose = xrFrame.getPose(plane.planeSpace, base); } catch { continue; }
+    if (!pose) continue;
+    const y = pose.transform.position.y;
+    const label = String(plane.semanticLabel || '').toLowerCase();
+    const area = polygonArea2D(plane.polygon);
+    candidates.push({ y, label, area, plane, pose });
+  }
+  // Prefer the semantic floor label. If the browser doesn't supply labels, wait until
+  // room capture has had time to run, then use the largest horizontal plane near floor level.
+  const labelledFloor = candidates.find(c => c.label === 'floor');
+  if (labelledFloor) {
+    alignPhysicsToPhysicalFloor(labelledFloor.y);
+    registerDetectedFloorPolygon(labelledFloor, base);
+    return;
+  }
+  if (now - roomSessionStartedAt > 4500) {
+    const unlabelledFloors = candidates.filter(c => Math.abs(c.y) < 0.35 && c.area >= 2.5);
+    unlabelledFloors.sort((a, b) => b.area - a.area);
+    if (unlabelledFloors.length) {
+      alignPhysicsToPhysicalFloor(unlabelledFloors[0].y);
+      registerDetectedFloorPolygon(unlabelledFloors[0], base);
+      return;
+    }
+  }
+  if (now - roomSessionStartedAt > 3000 && !roomCaptureAttempted && list.length === 0) {
+    roomCaptureAttempted = true;
+    if (typeof session.initiateRoomCapture === 'function') {
+      setStatus('Requesting Quest room capture so the physical floor and room boundaries can be found…');
+      Promise.resolve(session.initiateRoomCapture()).then(() => {
+        setStatus('Quest room capture started. Follow any headset prompts and wait for the floor to be detected.');
+      }).catch(() => {
+        setStatus('Quest room capture was unavailable. Using the WebXR floor origin and wide fallback floor.');
+      });
+    } else {
+      setStatus('Quest did not expose room planes. Using the WebXR floor origin and wide fallback floor.');
+    }
+  }
+  if (now - roomSessionStartedAt > 8000 && now - planeDetectionStatusAt > 6000) {
+    planeDetectionStatusAt = now;
+    setStatus('Waiting for Quest room data. Check Settings > Boundary > Mixed Reality and allow room/plane access if prompted.');
+  }
+}
+
+function pointInPolygonWithMargin(x, z, points, margin = 0.25) {
+  if (!points || points.length < 3) return true;
+  let inside = false;
+  let minDistance = Infinity;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const a = points[i], b = points[j];
+    if (((a.y > z) !== (b.y > z)) &&
+        (x < (b.x - a.x) * (z - a.y) / ((b.y - a.y) || 1e-9) + a.x)) inside = !inside;
+    const vx = b.x - a.x, vz = b.y - a.y;
+    const denom = vx * vx + vz * vz;
+    const t = denom ? THREE.MathUtils.clamp(((x - a.x) * vx + (z - a.y) * vz) / denom, 0, 1) : 0;
+    minDistance = Math.min(minDistance, Math.hypot(x - (a.x + vx * t), z - (a.y + vz * t)));
+  }
+  return inside && minDistance >= margin;
+}
+
+function positionPyramidInsideDetectedArea(points) {
+  if (pyramidPlacedForBoundaries || !points || points.length < 3 || !dominoCubes.length) return false;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of points) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.y); maxZ = Math.max(maxZ, p.y); }
+  const widthX = maxX - minX, widthZ = maxZ - minZ;
+  const baseSpan = (pyramidRows[0] - 1) * CUBE_SIZE + CUBE_SIZE;
+  const margin = 0.11;
+  const configurations = [];
+  // Prefer the usual side-to-side pyramid orientation. If the room is deeper than it is wide,
+  // try turning the pyramid 90 degrees so the full 6-cube row fits along the longer dimension.
+  if (widthX >= baseSpan + 2 * margin) {
+    const loX = minX + baseSpan / 2 + margin, hiX = maxX - baseSpan / 2 - margin;
+    const preferredX = THREE.MathUtils.clamp(0, loX, hiX);
+    const xCandidates = [preferredX, (minX + maxX) / 2];
+    const loZ = minZ + HALF_CUBE + margin + 0.07;
+    const hiZ = maxZ - HALF_CUBE - margin;
+    for (const cx of xCandidates) {
+      for (let cz = loZ; cz <= hiZ + 0.001; cz += 0.12) configurations.push({ cx, cz, alongZ: false });
+    }
+  }
+  if (widthZ >= baseSpan + 2 * margin) {
+    const loZ = minZ + baseSpan / 2 + margin, hiZ = maxZ - baseSpan / 2 - margin;
+    const preferredZ = THREE.MathUtils.clamp(minZ + baseSpan / 2 + margin, loZ, hiZ);
+    const zCandidates = [preferredZ, (minZ + maxZ) / 2];
+    const loX = minX + HALF_CUBE + margin + 0.07;
+    const hiX = maxX - HALF_CUBE - margin;
+    for (const cz of zCandidates) {
+      for (let cx = loX; cx <= hiX + 0.001; cx += 0.12) configurations.push({ cx, cz, alongZ: true });
+    }
+  }
+  const fits = cfg => {
+    for (const cube of dominoCubes) {
+      const rowCount = pyramidRows[cube.row];
+      const spread = (cube.col - (rowCount - 1) / 2) * CUBE_SIZE;
+      const x = cfg.alongZ ? cfg.cx : cfg.cx + spread;
+      const z = cfg.alongZ ? cfg.cz + spread : cfg.cz;
+      // Keep every cube footprint within the polygon, not just its centre.
+      for (const dx of [-HALF_CUBE, HALF_CUBE]) for (const dz of [-HALF_CUBE, HALF_CUBE]) {
+        if (!pointInPolygonWithMargin(x + dx, z + dz, points, 0.025)) return false;
+      }
+      // Keep the base row separate from the single cube the user throws.
+      if (cube.row === 0 && Math.hypot(x - initial.x, z - initial.z) < CUBE_SIZE + 0.025) return false;
+    }
+    return true;
+  };
+  const configuration = configurations.find(fits);
+  if (!configuration) return false;
+  for (const cube of dominoCubes) {
+    const rowCount = pyramidRows[cube.row];
+    const spread = (cube.col - (rowCount - 1) / 2) * CUBE_SIZE;
+    const x = configuration.alongZ ? configuration.cx : configuration.cx + spread;
+    const z = configuration.alongZ ? configuration.cz + spread : configuration.cz;
+    const y = physicalFloorY + HALF_CUBE + cube.row * CUBE_SIZE + 0.002;
+    cube.initial = { x, y, z };
+    cube.chainTriggered = false;
+    cube.body.setTranslation({ x, y, z }, true);
+    cube.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    cube.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    cube.body.wakeUp();
+  }
+  pyramidPlacedForBoundaries = true;
+  syncVisual();
+  return true;
+}
+
+// A small assist helps a struck cube pass motion to physically adjacent pyramid cubes.
+// Rapier remains responsible for all collisions and rigid-body motion.
+function updateDominoChain() {
+  for (const current of dominoCubes) {
+    if (current.chainTriggered) continue;
+    const p = current.body.translation();
+    const v = current.body.linvel();
+    const movedBack = current.initial.z - p.z > CUBE_SIZE * 0.075;
+    if (movedBack && v.z < -0.10) {
+      current.chainTriggered = true;
+      for (const neighbor of current.neighbors) {
+        neighbor.body.applyImpulse({ x: 0, y: 0, z: -0.095 }, true);
+        neighbor.body.applyTorqueImpulse({ x: -0.024, y: 0, z: 0 }, true);
+      }
+    }
+  }
+}
+
+// XR controller and hand input. The trigger/grip polling below is a fallback for browsers
+// that dispatch select/squeeze events differently; tracked hands use measured fingertip distance.
+const controllerFactory = new XRControllerModelFactory();
+const handFactory = new XRHandModelFactory();
+const controllerStates = [];
+const handStates = [];
+const tempPos = new THREE.Vector3();
+const tempQuat = new THREE.Quaternion();
+let heldBy = null;
+// Keep grabbing at a natural arm's reach; use the left stick to approach a cube thrown farther away.
+const MAX_GRAB_DISTANCE = 1.85;
+
+function getWorldPose(obj, pos, quat) {
+  obj.updateWorldMatrix(true, false);
+  obj.getWorldPosition(pos);
+  obj.getWorldQuaternion(quat);
+}
+function beginXRGrab(state, inputKind) {
+  if (state.holding || heldBy || mouseGrab.active) return false;
+  getWorldPose(state.poseObject, tempPos, tempQuat);
+  const candidate = findClosestGrabbable(tempPos);
+  if (!candidate.cube) {
+    const now = performance.now();
+    if (now - (state.lastRejectStatus || 0) > 1200) {
+      setStatus(candidate.distance < Infinity
+        ? `Nearest cube is ${candidate.distance.toFixed(1)} m away. Use the LEFT thumbstick to move closer.`
+        : 'No cubes are available to grab.');
+      state.lastRejectStatus = now;
+    }
+    return false;
+  }
+
+  const target = candidate.cube;
+  const body = target.body;
+  const visual = target.visual;
+  if (!body || !visual) return false;
+  state.holding = true;
+  state.inputKind = inputKind;
+  state.grabbedCube = target;
+  heldBy = state;
+  const inverse = tempQuat.clone().invert();
+  state.offsetPos.copy(visual.position).sub(tempPos).applyQuaternion(inverse);
+  state.offsetQuat.copy(inverse).multiply(visual.quaternion);
+  state.lastPos.copy(visual.position);
+  state.lastQuat.copy(visual.quaternion);
+  state.lastTime = performance.now();
+  state.linearVelocity.set(0, 0, 0);
+  state.angularVelocity.set(0, 0, 0);
+  body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+  body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  const name = target === starterCube ? 'Starter cube' : 'Pyramid cube';
+  setStatus(`${name} grabbed. Move your hand; release trigger/grip or unpinch to throw.`);
+  return true;
+}
+function endXRGrab(state) {
+  // Release the actual cube held by this state, whether it is the starter cube or a pyramid cube.
+  // This is deliberately idempotent to handle duplicate/missed WebXR release events safely.
+  if (!state) return;
+  const wasHolding = state.holding || heldBy === state;
+  const target = state.grabbedCube || null;
+  state.holding = false;
+  state.inputKind = null;
+  state.grabbedCube = null;
+  if (heldBy === state) heldBy = null;
+  if (!wasHolding || !target || !target.body) return;
+
+  const body = target.body;
+  body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+  const v = state.linearVelocity.clone().clampLength(0, 7.0);
+  const w = state.angularVelocity.clone().clampLength(0, 10.0);
+  body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
+  body.setAngvel({ x: w.x, y: w.y, z: w.z }, true);
+  body.wakeUp();
+  setStatus('Cube released. You can grab any of the other cubes too. Use the left thumbstick to move closer if needed.');
+}
+function makeState(poseObject, kind) {
+  return {
+    poseObject, kind, holding: false, inputKind: null, grabbedCube: null,
+    offsetPos: new THREE.Vector3(), offsetQuat: new THREE.Quaternion(),
+    lastPos: new THREE.Vector3(), lastQuat: new THREE.Quaternion(),
+    linearVelocity: new THREE.Vector3(), angularVelocity: new THREE.Vector3(), lastTime: 0,
+    lastAttempt: 0, lastRejectStatus: 0, lastButtonDown: false, pinching: false
+  };
+}
+for (let i = 0; i < 2; i++) {
+  const controller = renderer.xr.getController(i);
+  const grip = renderer.xr.getControllerGrip(i);
+  const hand = renderer.xr.getHand(i);
+  controller.visible = false;
+  grip.visible = false;
+  hand.visible = false;
+  scene.add(controller, grip, hand);
+  grip.add(controllerFactory.createControllerModel(grip));
+  hand.add(handFactory.createHandModel(hand, 'mesh'));
+
+  const rayGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)
+  ]);
+  const ray = new THREE.Line(rayGeom, new THREE.LineBasicMaterial({
+    color: i === 0 ? 0x91e2c2 : 0xe6c17d, transparent: true, opacity: .45
+  }));
+  ray.scale.z = 2.0;
+  controller.add(ray);
+
+  const cState = makeState(grip, 'controller');
+  cState.controllerObject = controller;
+  cState.handedness = i === 0 ? 'left' : 'right';
+  controller.addEventListener('selectstart', () => beginXRGrab(cState, 'select'));
+  controller.addEventListener('selectend', () => { if (cState.inputKind === 'select') endXRGrab(cState); });
+  controller.addEventListener('squeezestart', () => beginXRGrab(cState, 'squeeze'));
+  controller.addEventListener('squeezeend', () => { if (cState.inputKind === 'squeeze') endXRGrab(cState); });
+  controller.addEventListener('connected', (event) => {
+    const source = event.data;
+    controller.userData.inputSource = source;
+    const isHandInput = Boolean(source && source.hand);
+    controller.visible = !isHandInput;
+    grip.visible = !isHandInput;
+    hand.visible = isHandInput;
+  });
+  controller.addEventListener('disconnected', () => {
+    controller.userData.inputSource = null;
+    controller.visible = false;
+    grip.visible = false;
+    hand.visible = false;
+    if (cState.holding) endXRGrab(cState);
+    cState.lastButtonDown = false;
+  });
+  controllerStates.push(cState);
+
+  const anchor = new THREE.Group();
+  scene.add(anchor);
+  const hState = makeState(anchor, 'hand');
+  hState.hand = hand;
+  hState.anchor = anchor;
+  hand.addEventListener('connected', (event) => {
+    if (event.data && event.data.hand) {
+      hand.visible = true;
+      grip.visible = false;
+      controller.visible = false;
+    }
+  });
+  hand.addEventListener('disconnected', () => {
+    hand.visible = false;
+    hState.pinching = false;
+    if (hState.holding) endXRGrab(hState);
+  });
+  handStates.push(hState);
+}
+
+function updateHandAnchors() {
+  for (const state of handStates) {
+    const hand = state.hand;
+    const joints = hand && hand.joints;
+    if (!joints) continue;
+    const thumb = joints['thumb-tip'];
+    const index = joints['index-finger-tip'];
+    const wrist = joints['wrist'];
+    if (!thumb || !index || !thumb.visible || !index.visible) continue;
+    thumb.updateWorldMatrix(true, false);
+    index.updateWorldMatrix(true, false);
+    thumb.getWorldPosition(tempPos);
+    const thumbPos = tempPos.clone();
+    index.getWorldPosition(tempPos);
+    const indexPos = tempPos.clone();
+    state.anchor.position.copy(thumbPos).add(indexPos).multiplyScalar(0.5);
+    if (wrist && wrist.visible) {
+      wrist.updateWorldMatrix(true, false);
+      wrist.getWorldQuaternion(state.anchor.quaternion);
+    }
+    const pinchNow = thumbPos.distanceTo(indexPos) < 0.035;
+    if (pinchNow) {
+      if (!state.holding && !heldBy && performance.now() - state.lastAttempt > 180) {
+        state.lastAttempt = performance.now();
+        beginXRGrab(state, 'pinch');
+      }
+    } else if (state.holding && state.inputKind === 'pinch') {
+      endXRGrab(state);
+    }
+    state.pinching = pinchNow;
+  }
+}
+
+function updateControllerGrabPolling(now) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  const sources = Array.from(session.inputSources || []);
+  for (const state of controllerStates) {
+    let source = state.controllerObject.userData.inputSource;
+    if (!source || source.handedness !== state.handedness) {
+      source = sources.find(s => s.handedness === state.handedness && s.gamepad && !s.hand);
+    }
+    if (!source || source.hand || !source.gamepad) {
+      // A disappearing input source must never leave the cube locked in a held state.
+      if (state.holding || heldBy === state) endXRGrab(state);
+      state.lastButtonDown = false;
+      continue;
+    }
+    const buttons = source.gamepad.buttons || [];
+    const trigger = buttons[0];
+    const squeeze = buttons[1];
+    const down = Boolean(
+      (trigger && (trigger.pressed || trigger.value > 0.58)) ||
+      (squeeze && (squeeze.pressed || squeeze.value > 0.58))
+    );
+
+    // Important fix: polling now releases grabs started by select/squeeze events too,
+    // not just grabs that began through polling. This covers missed WebXR end events.
+    if (state.holding && !down && ['select', 'squeeze', 'poll'].includes(state.inputKind)) {
+      endXRGrab(state);
+    } else if (down && !state.holding && !heldBy && now - state.lastAttempt > 180) {
+      state.lastAttempt = now;
+      beginXRGrab(state, 'poll');
+    }
+    state.lastButtonDown = down;
+  }
+}
+
+// Desktop fallback: click and drag the box, then release to throw it.
+const raycaster = new THREE.Raycaster();
+const mouseNdc = new THREE.Vector2();
+const dragPlane = new THREE.Plane();
+const planePoint = new THREE.Vector3();
+const planeNormal = new THREE.Vector3();
+const hitPoint = new THREE.Vector3();
+const dragOffset = new THREE.Vector3();
+const mouseGrab = { active: false, cube: null, lastPos: new THREE.Vector3(), velocity: new THREE.Vector3(), lastTime: 0 };
+function updateRay(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  mouseNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+  mouseNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(mouseNdc, camera);
+}
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (renderer.xr.isPresenting || heldBy || mouseGrab.active) return;
+  updateRay(e);
+  const hits = raycaster.intersectObjects(grabbableCubes.map(cube => cube.visual), true);
+  if (!hits.length) return;
+  const target = getGrabbableFromHit(hits[0].object);
+  if (!target || !target.body) return;
+  e.preventDefault();
+  mouseGrab.active = true;
+  mouseGrab.cube = target;
+  renderer.domElement.setPointerCapture?.(e.pointerId);
+  planeNormal.copy(camera.getWorldDirection(new THREE.Vector3())).normalize();
+  planePoint.copy(target.visual.position);
+  dragPlane.setFromNormalAndCoplanarPoint(planeNormal, planePoint);
+  dragOffset.copy(target.visual.position).sub(hits[0].point);
+  mouseGrab.lastPos.copy(target.visual.position);
+  mouseGrab.velocity.set(0, 0, 0);
+  mouseGrab.lastTime = performance.now();
+  target.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+  target.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  target.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  setStatus('Dragging cube. Release the mouse to throw it into the others.');
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!mouseGrab.active || !mouseGrab.cube || !mouseGrab.cube.body) return;
+  updateRay(e);
+  if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
+  const next = hitPoint.clone().add(dragOffset);
+  const now = performance.now(), dt = Math.max(.008, (now - mouseGrab.lastTime) / 1000);
+  mouseGrab.velocity.copy(next).sub(mouseGrab.lastPos).multiplyScalar(1 / dt).clampLength(0, 7);
+  mouseGrab.lastPos.copy(next);
+  mouseGrab.lastTime = now;
+  mouseGrab.cube.body.setNextKinematicTranslation({ x: next.x, y: next.y, z: next.z });
+});
+function endMouseGrab() {
+  if (!mouseGrab.active) return;
+  const target = mouseGrab.cube;
+  mouseGrab.active = false;
+  mouseGrab.cube = null;
+  if (!target || !target.body) return;
+  target.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+  const v = mouseGrab.velocity.clone().clampLength(0, 7);
+  target.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
+  target.body.wakeUp();
+  setStatus('Released. Gravity, collisions and bounce are active.');
+}
+window.addEventListener('pointerup', endMouseGrab);
+window.addEventListener('pointercancel', endMouseGrab);
+
+function syncVisual() {
+  const p = boxBody.translation(), q = boxBody.rotation();
+  boxVisual.position.set(p.x, p.y, p.z);
+  boxVisual.quaternion.set(q.x, q.y, q.z, q.w);
+  for (const cube of dominoCubes) {
+    const cp = cube.body.translation(), cq = cube.body.rotation();
+    cube.visual.position.set(cp.x, cp.y, cp.z);
+    cube.visual.quaternion.set(cq.x, cq.y, cq.z, cq.w);
+  }
+}
+function updateHeldBox(now) {
+  const state = heldBy;
+  if (!state || !state.holding) return;
+  const target = state.grabbedCube;
+  if (!target || !target.body) {
+    endXRGrab(state);
+    return;
+  }
+  const body = target.body;
+  getWorldPose(state.poseObject, tempPos, tempQuat);
+  const nextPos = state.offsetPos.clone().applyQuaternion(tempQuat).add(tempPos);
+  const nextQuat = tempQuat.clone().multiply(state.offsetQuat);
+  const dt = Math.max(.008, Math.min(.05, (now - state.lastTime) / 1000));
+  state.linearVelocity.copy(nextPos).sub(state.lastPos).multiplyScalar(1 / dt);
+  const dq = nextQuat.clone().multiply(state.lastQuat.clone().invert());
+  const angle = 2 * Math.acos(THREE.MathUtils.clamp(dq.w, -1, 1));
+  const denom = Math.sqrt(Math.max(1e-8, 1 - dq.w * dq.w));
+  if (denom > 1e-4 && angle < Math.PI) state.angularVelocity.set(dq.x / denom, dq.y / denom, dq.z / denom).multiplyScalar(angle / dt);
+  else state.angularVelocity.set(0, 0, 0);
+  state.lastPos.copy(nextPos);
+  state.lastQuat.copy(nextQuat);
+  state.lastTime = now;
+  body.setNextKinematicTranslation({ x: nextPos.x, y: nextPos.y, z: nextPos.z });
+  body.setNextKinematicRotation({ x: nextQuat.x, y: nextQuat.y, z: nextQuat.z, w: nextQuat.w });
+}
+
+// Smooth joystick locomotion via an offset XR reference space. This moves the tracked
+// viewpoint and controllers together without moving physics objects away from their colliders.
+const locomotion = {
+  baseReferenceSpace: null,
+  offset: new THREE.Vector3(),
+  speed: 1.7,
+  lastStatusAt: 0
+};
+const locomotionForward = new THREE.Vector3();
+const locomotionRight = new THREE.Vector3();
+const locomotionMove = new THREE.Vector3();
+const locomotionQuaternion = new THREE.Quaternion();
+function applyReferenceOffset() {
+  if (!locomotion.baseReferenceSpace || !renderer.xr.isPresenting) return;
+  const transform = new XRRigidTransform(
+    { x: locomotion.offset.x, y: locomotion.offset.y, z: locomotion.offset.z },
+    { x: 0, y: 0, z: 0, w: 1 }
+  );
+  renderer.xr.setReferenceSpace(locomotion.baseReferenceSpace.getOffsetReferenceSpace(transform));
+}
+function applyDeadzone(value) {
+  const deadzone = 0.16;
+  if (Math.abs(value) < deadzone) return 0;
+  return Math.sign(value) * (Math.abs(value) - deadzone) / (1 - deadzone);
+}
+function getThumbstick(source) {
+  const axes = source && source.gamepad && source.gamepad.axes;
+  if (!axes || axes.length < 2) return { x: 0, y: 0 };
+  // The xr-standard layout reserves axes 0–1 for the touchpad and 2–3 for the thumbstick.
+  const x = axes.length >= 4 ? axes[2] : axes[0];
+  const y = axes.length >= 4 ? axes[3] : axes[1];
+  return { x: applyDeadzone(x || 0), y: applyDeadzone(y || 0) };
+}
+function updateXRLocomotion(frameDt, xrFrame) {
+  const session = renderer.xr.getSession();
+  if (!session || !xrFrame || !locomotion.baseReferenceSpace) return;
+  let viewerPose;
+  try { viewerPose = xrFrame.getViewerPose(locomotion.baseReferenceSpace); } catch { return; }
+  if (!viewerPose) return;
+  const leftSource = Array.from(session.inputSources || []).find(s => s.handedness === 'left' && s.gamepad && !s.hand);
+  if (!leftSource) return;
+  const stick = getThumbstick(leftSource);
+  if (Math.abs(stick.x) < 0.001 && Math.abs(stick.y) < 0.001) return;
+
+  const q = viewerPose.transform.orientation;
+  locomotionQuaternion.set(q.x, q.y, q.z, q.w).normalize();
+  locomotionForward.set(0, 0, -1).applyQuaternion(locomotionQuaternion);
+  locomotionForward.y = 0;
+  if (locomotionForward.lengthSq() > 0.0001) locomotionForward.normalize();
+  locomotionRight.set(1, 0, 0).applyQuaternion(locomotionQuaternion);
+  locomotionRight.y = 0;
+  if (locomotionRight.lengthSq() > 0.0001) locomotionRight.normalize();
+
+  // Pushing the left stick up yields a negative Y axis value.
+  locomotionMove.copy(locomotionRight).multiplyScalar(stick.x)
+    .addScaledVector(locomotionForward, -stick.y);
+  if (locomotionMove.lengthSq() > 1) locomotionMove.normalize();
+  locomotionMove.multiplyScalar(locomotion.speed * frameDt);
+  if (locomotionMove.lengthSq() < 1e-7) return;
+
+  const nextOffset = locomotion.offset.clone().sub(locomotionMove);
+  const physicalHead = viewerPose.transform.position;
+  const virtualX = physicalHead.x - nextOffset.x;
+  const virtualZ = physicalHead.z - nextOffset.z;
+  // Prefer the actual Guardian polygon from Quest. Fall back to conservative room extents
+  // only when the browser does not expose bounded-floor geometry for this session.
+  const insideRegisteredBoundary = playAreaBoundsRegistered
+    ? pointInPolygonWithMargin(virtualX, virtualZ, guardianBounds, 0.25)
+    : (virtualX >= -3.45 && virtualX <= 3.45 && virtualZ >= -9.4 && virtualZ <= 4.0);
+  if (!insideRegisteredBoundary) {
+    const now = performance.now();
+    if (now - locomotion.lastStatusAt > 1500) {
+      setStatus(playAreaBoundsRegistered
+        ? 'Quest Guardian edge reached. Move back inside the detected play area.'
+        : 'Room boundary reached. Use the left thumbstick to move back inside.');
+      locomotion.lastStatusAt = now;
+    }
+    return;
+  }
+  locomotion.offset.copy(nextOffset);
+  applyReferenceOffset();
+}
+
+document.getElementById('reset').addEventListener('click', () => {
+  if (heldBy) { heldBy.holding = false; heldBy.inputKind = null; heldBy.grabbedCube = null; heldBy = null; }
+  for (const state of [...controllerStates, ...handStates]) { state.holding = false; state.inputKind = null; state.grabbedCube = null; }
+  mouseGrab.active = false;
+  mouseGrab.cube = null;
+  locomotion.offset.set(0, 0, 0);
+  applyReferenceOffset();
+  boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+  boxBody.setTranslation(initial, true);
+  boxBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  boxBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  boxBody.wakeUp();
+  for (const cube of dominoCubes) {
+    cube.chainTriggered = false;
+    cube.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+    cube.body.setTranslation(cube.initial, true);
+    cube.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    cube.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    cube.body.wakeUp();
+  }
+  syncVisual();
+  setStatus('Scene reset. All 21 imported 3D models can be grabbed, thrown, and collided with.');
+});
+
+function setPassthroughVisualMode(enabled) {
+  // In mixed-reality mode, hide only the virtual room artwork. The invisible Rapier
+  // floor and walls remain in the physics world so the cubes still fall and collide.
+  floor.visible = !enabled;
+  walls.visible = !enabled;
+  trimGroup.visible = !enabled;
+  if (enabled) {
+    scene.background = null;
+    scene.fog = null;
+    renderer.setClearColor(0x000000, 0);
+    setStatus('Passthrough active. You are seeing your real room with the virtual cubes overlaid.');
+  } else {
+    scene.background = new THREE.Color(0x9aacae);
+    scene.fog = new THREE.Fog(0x9aacae, 13, 30);
+    renderer.setClearColor(0x000000, 0);
+  }
+}
+
+renderer.xr.addEventListener('sessionstart', () => {
+  const session = renderer.xr.getSession();
+  const isPassthrough = requestedSessionMode === 'immersive-ar' || (session && session.environmentBlendMode && session.environmentBlendMode !== 'opaque');
+  setPassthroughVisualMode(isPassthrough);
+  camera.position.set(0, 0, 0);
+  camera.rotation.set(0, 0, 0);
+  locomotion.baseReferenceSpace = renderer.xr.getReferenceSpace();
+  locomotion.offset.set(0, 0, 0);
+  roomSessionStartedAt = performance.now();
+  roomCaptureAttempted = false;
+  planeDetectionStatusAt = 0;
+  guardianReferenceSpace = null;
+  guardianBounds = [];
+  playAreaBoundsRegistered = false;
+  playAreaBoundsSource = '';
+  pyramidPlacedForBoundaries = false;
+  removeGuardianWallColliders();
+  if (session) {
+    // The WebXR bounded-floor space exposes Guardian boundsGeometry where the device/browser supports it.
+    session.requestReferenceSpace('bounded-floor').then(space => {
+      guardianReferenceSpace = space;
+      setStatus(isPassthrough
+        ? 'Passthrough active. Reading the Quest play-area boundary and physical floor…'
+        : 'VR active. Reading Quest play-area bounds where available…');
+    }).catch(() => {
+      guardianReferenceSpace = null;
+      if (isPassthrough) setStatus('Passthrough active. Guardian outline is not exposed in this session; checking room floor data.');
+    });
+  }
+  if (!isPassthrough) setStatus('VR active. Squeeze trigger/grip to grab; left thumbstick moves around the room.');
+});
+renderer.xr.addEventListener('sessionend', () => {
+  setPassthroughVisualMode(false);
+  requestedSessionMode = 'immersive-vr';
+  setDesktopCamera();
+  if (heldBy) endXRGrab(heldBy);
+  locomotion.baseReferenceSpace = null;
+  locomotion.offset.set(0, 0, 0);
+  guardianReferenceSpace = null;
+  guardianBounds = [];
+  playAreaBoundsRegistered = false;
+  playAreaBoundsSource = '';
+  pyramidPlacedForBoundaries = false;
+  removeGuardianWallColliders();
+  // Return to the default virtual-room floor when leaving passthrough.
+  if (physicalFloorDetected) {
+    const delta = -physicalFloorY;
+    fixedBody.setTranslation({ x: 0, y: 0, z: 0 }, true);
+    const mainPos = boxBody.translation();
+    boxBody.setTranslation({ x: mainPos.x, y: mainPos.y + delta, z: mainPos.z }, true);
+    initial.y += delta;
+    for (const cube of dominoCubes) {
+      const p = cube.body.translation();
+      cube.body.setTranslation({ x: p.x, y: p.y + delta, z: p.z }, true);
+      cube.initial.y += delta;
+    }
+    physicalFloorY = 0;
+    physicalFloorDetected = false;
+    floor.position.y = -0.05;
+    syncVisual();
+  }
+  setStatus('Desktop preview. Drag any cube with the mouse, then release to throw it.');
+});
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+let previous = performance.now(), accumulator = 0;
+setStatus('Loading woman_wearing_swimsuit.glb… keep woman_wearing_swimsuit.glb in the same repository folder as index265.html.');
+renderer.setAnimationLoop((now, xrFrame) => {
+  const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
+  previous = now;
+  if (renderer.xr.isPresenting) {
+    updateQuestGuardianBounds(xrFrame);
+    updateDetectedFloor(xrFrame, now);
+    updateXRLocomotion(frameDt, xrFrame);
+    updateControllerGrabPolling(now);
+    updateHandAnchors();
+  }
+  if (!mouseGrab.active) updateHeldBox(now);
+  accumulator += frameDt;
+  const fixedDt = 1 / 60;
+  let steps = 0;
+  while (accumulator >= fixedDt && steps < 4) {
+    world.timestep = fixedDt;
+    world.step();
+    updateDominoChain();
+    accumulator -= fixedDt;
+    steps++;
+  }
+  if (steps === 4) accumulator = 0;
+  syncVisual();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
