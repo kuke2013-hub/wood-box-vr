@@ -41,12 +41,12 @@
 <div id="hud">
   <div class="panel">
     <h1>Single 3D Object VR</h1>
-    <div id="summary">Enter VR or Passthrough. One movable object uses woman_wearing_swimsuit.glb. Pick it up, resize it with both hands, move it around, and throw it.</div>
+    <div id="summary">Enter VR or Passthrough. Grab and throw woman_wearing_swimsuit.glb, resize it with both hands, and hear short wooden knocks on impacts.</div>
     <div id="toolbar"><span id="vr-slot"></span><span id="ar-slot"></span><button id="reset" type="button">Reset scene</button></div>
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Desktop: click and drag the model.</div>
+<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -60,6 +60,120 @@ import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.
 const statusEl = document.getElementById('status');
 const stage = document.getElementById('stage');
 const setStatus = (message) => { statusEl.textContent = message; };
+
+// Procedural wooden impact audio: no external sound file is required. The AudioContext
+// is unlocked from the user's VR/Passthrough button click (or the first desktop gesture).
+let impactAudioContext = null;
+let impactMasterGain = null;
+let impactNoiseBuffer = null;
+let lastWoodKnockAt = -Infinity;
+let lastContactForceEventAt = -Infinity;
+let contactSoundLatched = false;
+const WOOD_KNOCK_COOLDOWN_MS = 82;
+const CONTACT_EVENT_RELEASE_MS = 145;
+
+function ensureImpactAudio() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    if (!impactAudioContext) {
+      impactAudioContext = new AudioContextClass();
+      impactMasterGain = impactAudioContext.createGain();
+      impactMasterGain.gain.value = 0.78;
+      impactMasterGain.connect(impactAudioContext.destination);
+      const length = Math.max(1, Math.floor(impactAudioContext.sampleRate * 0.055));
+      impactNoiseBuffer = impactAudioContext.createBuffer(1, length, impactAudioContext.sampleRate);
+      const data = impactNoiseBuffer.getChannelData(0);
+      for (let i = 0; i < length; i++) {
+        // A very short, naturally decaying noise burst supplies the dry wooden click.
+        const envelope = Math.pow(1 - i / length, 2.8);
+        data[i] = (Math.random() * 2 - 1) * envelope;
+      }
+    }
+    if (impactAudioContext.state === 'suspended') {
+      impactAudioContext.resume().catch(() => {});
+    }
+  } catch (error) {
+    console.warn('Impact sound could not be initialized:', error);
+  }
+}
+
+function playWoodKnock(forceMagnitude = 24) {
+  ensureImpactAudio();
+  if (!impactAudioContext || impactAudioContext.state !== 'running') return;
+  const nowMs = performance.now();
+  if (nowMs - lastWoodKnockAt < WOOD_KNOCK_COOLDOWN_MS) return;
+  lastWoodKnockAt = nowMs;
+
+  const ctx = impactAudioContext;
+  const t = ctx.currentTime;
+  // Map collision force to a restrained, non-startling volume.
+  const impactStrength = THREE.MathUtils.clamp((forceMagnitude - 10) / 150, 0.12, 1);
+  const volume = 0.11 + impactStrength * 0.34;
+  const variation = 0.88 + Math.random() * 0.24;
+
+  // Low, rapidly falling triangular resonance gives the knock a wooden body.
+  const bodyOsc = ctx.createOscillator();
+  const bodyGain = ctx.createGain();
+  bodyOsc.type = 'triangle';
+  bodyOsc.frequency.setValueAtTime((155 + Math.random() * 75) * variation, t);
+  bodyOsc.frequency.exponentialRampToValueAtTime(72 + Math.random() * 20, t + 0.095);
+  bodyGain.gain.setValueAtTime(0.0001, t);
+  bodyGain.gain.linearRampToValueAtTime(volume * 0.62, t + 0.0035);
+  bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+  bodyOsc.connect(bodyGain);
+  bodyGain.connect(impactMasterGain);
+  bodyOsc.start(t);
+  bodyOsc.stop(t + 0.15);
+
+  // A higher, very brief resonant tap adds the hard edge of a wooden object landing.
+  const tickOsc = ctx.createOscillator();
+  const tickGain = ctx.createGain();
+  tickOsc.type = 'sine';
+  tickOsc.frequency.setValueAtTime((430 + Math.random() * 260) * variation, t);
+  tickOsc.frequency.exponentialRampToValueAtTime(210, t + 0.035);
+  tickGain.gain.setValueAtTime(0.0001, t);
+  tickGain.gain.linearRampToValueAtTime(volume * 0.24, t + 0.002);
+  tickGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.048);
+  tickOsc.connect(tickGain);
+  tickGain.connect(impactMasterGain);
+  tickOsc.start(t);
+  tickOsc.stop(t + 0.052);
+
+  // Filtered noise transient, like the tiny scrape/click on a hard surface.
+  if (impactNoiseBuffer) {
+    const noise = ctx.createBufferSource();
+    const filter = ctx.createBiquadFilter();
+    const noiseGain = ctx.createGain();
+    noise.buffer = impactNoiseBuffer;
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(1100 + Math.random() * 900, t);
+    filter.Q.value = 0.85;
+    noiseGain.gain.setValueAtTime(Math.max(0.0001, volume * 0.16), t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.042);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(impactMasterGain);
+    noise.start(t);
+    noise.stop(t + 0.045);
+  }
+}
+
+function handlePhysicsImpact(forceMagnitude) {
+  const now = performance.now();
+  // Rapier may report a contact force on several consecutive physics steps. Treat this as
+  // one knock until contact force events have been quiet for a short interval; bouncing
+  // separates into distinct knocks after the gap.
+  if (now - lastContactForceEventAt > CONTACT_EVENT_RELEASE_MS) contactSoundLatched = false;
+  lastContactForceEventAt = now;
+  if (contactSoundLatched || forceMagnitude < 13.5) return;
+  contactSoundLatched = true;
+  playWoodKnock(forceMagnitude);
+}
+
+// Unlock audio during a direct user gesture so Quest Browser does not block later impacts.
+window.addEventListener('pointerdown', ensureImpactAudio, { passive: true });
+window.addEventListener('keydown', ensureImpactAudio);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9aacae);
@@ -105,8 +219,8 @@ arButton.textContent = 'PASSTHROUGH';
 document.getElementById('ar-slot').appendChild(arButton);
 let requestedSessionMode = 'immersive-vr';
 // Remember which button initiated the session so AR rendering doesn't depend only on browser metadata.
-vrButton.addEventListener('click', () => { requestedSessionMode = 'immersive-vr'; }, true);
-arButton.addEventListener('click', () => { requestedSessionMode = 'immersive-ar'; }, true);
+vrButton.addEventListener('click', () => { ensureImpactAudio(); requestedSessionMode = 'immersive-vr'; }, true);
+arButton.addEventListener('click', () => { ensureImpactAudio(); requestedSessionMode = 'immersive-ar'; }, true);
 
 scene.add(new THREE.HemisphereLight(0xe0eaff, 0x5a3b25, 1.9));
 const keyLight = new THREE.DirectionalLight(0xffe0b3, 3.1);
@@ -212,6 +326,8 @@ addTrim(7.9, .12, .1, 0, .06, -10.41);
 await RAPIER.init();
 const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 world.timestep = 1 / 60;
+// Required by Rapier for collision/contact-force event reporting.
+const physicsEventQueue = new RAPIER.EventQueue(true);
 // Keep the room walls and the floor on separate fixed bodies. The Quest floor-registration
 // step is allowed to move the ground only; it must never move the wall colliders with it.
 const fixedBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -230,6 +346,9 @@ const floorCollider = world.createCollider(
 world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(-3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
 world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
 world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0, 1.575, -10.45).setFriction(.7).setRestitution(.42), fixedBody);
+// Invisible ceiling collider above the virtual room. In passthrough it remains invisible,
+// but stops the object travelling indefinitely upward and produces impact events.
+world.createCollider(RAPIER.ColliderDesc.cuboid(4, .05, 7.5).setTranslation(0, 3.25, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
 
 // Physics uses a 1 kg cuboid fitted to the imported model's measured local bounds.
 const CUBE_SIZE = 0.34;
@@ -249,25 +368,15 @@ function getColliderHalfExtents(scaleFactor = 1) {
     Math.max(MIN_COLLIDER_HALF_EXTENT, modelBaseHalfExtents.z * scaleFactor)
   );
 }
-const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.78 });
-const cubeGeometry = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
-
-// A temporary fallback cuboid appears until woman_wearing_swimsuit.glb loads, or if the file is missing.
-// The stable visual root preserves grab/throw logic while the 3D model loads.
-function createFallbackCubeMesh() {
-  const mesh = new THREE.Mesh(cubeGeometry, boxMat);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData.isFallbackCube = true;
-  return mesh;
-}
+// The user's custom GLB is the only visible movable object. We deliberately do NOT
+// show a wooden-cube placeholder while the GLB loads or if the filename is wrong.
+// The physics body exists independently; a clear status message will report load failures.
 function createCubeVisualRoot() {
-  const root = new THREE.Group();
-  root.add(createFallbackCubeMesh());
-  return root;
+  return new THREE.Group();
 }
 
 const boxVisual = createCubeVisualRoot();
+boxVisual.visible = false; // becomes visible only after woman_wearing_swimsuit.glb loads successfully
 scene.add(boxVisual);
 
 // One movable 3D model, placed within easy reach of the player.
@@ -278,6 +387,8 @@ function makeObjectColliderDescriptor(scaleFactor = 1) {
   const half = getColliderHalfExtents(scaleFactor);
   return RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
     .setMass(1.0) // Keep the object easy to handle even when enlarged.
+    .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+    .setContactForceEventThreshold(11.5)
     .setFriction(0.68)
     .setRestitution(0.68)
     .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max);
@@ -359,6 +470,7 @@ function replaceFallbackWithNora(visualRoot) {
   if (!noraTemplate) return;
   visualRoot.clear();
   visualRoot.add(createNoraInstance());
+  visualRoot.visible = true;
 }
 noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
   try {
@@ -379,6 +491,7 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
     );
     noraTemplate = gltf.scene;
     for (const cube of grabbableCubes) replaceFallbackWithNora(cube.visual);
+    boxVisual.visible = true;
     applyObjectScale(boxVisual.scale.x || 1, true);
     // Place the upright model exactly on the current physics floor after its real bounds are known.
     // Avoid teleporting it if the user happened to grab it while the GLB was still loading.
@@ -401,7 +514,7 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
   }
 }, undefined, error => {
   console.error('Could not load ./woman_wearing_swimsuit.glb:', error);
-  setStatus('woman_wearing_swimsuit.glb was not loaded. Upload the file named exactly woman_wearing_swimsuit.glb beside index265.html; showing a fallback shape for now.');
+  setStatus('woman_wearing_swimsuit.glb was not loaded. Upload the file named exactly woman_wearing_swimsuit.glb beside index265.html; no placeholder cube will be shown.');
 });
 
 function findClosestGrabbable(position) {
@@ -1050,6 +1163,7 @@ function enforceFloorSafetyNet() {
   const angular = boxBody.angvel();
   boxBody.setAngvel({ x: angular.x * 0.9, y: angular.y * 0.9, z: angular.z * 0.9 }, true);
   boxBody.wakeUp();
+  if (impactSpeed > 0.45) playWoodKnock(Math.max(18, impactSpeed * 34));
 
   const now = performance.now();
   if (now - lastFloorSafetyReport > 2500) {
@@ -1314,8 +1428,25 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+function processPhysicsContactSounds() {
+  const activeHandle = boxCollider ? boxCollider.handle : null;
+  physicsEventQueue.drainContactForceEvents(event => {
+    if (activeHandle === null) return;
+    const handle1 = event.collider1();
+    const handle2 = event.collider2();
+    if (handle1 !== activeHandle && handle2 !== activeHandle) return;
+    let force = 0;
+    try {
+      force = Math.max(event.totalForceMagnitude(), event.maxForceMagnitude());
+    } catch {
+      try { force = event.totalForceMagnitude(); } catch { force = 0; }
+    }
+    if (Number.isFinite(force)) handlePhysicsImpact(force);
+  });
+}
+
 let previous = performance.now(), accumulator = 0;
-setStatus('Loading woman_wearing_swimsuit.glb… keep it beside index265.html. Grab with one hand; use both hands to resize.');
+setStatus('Loading your custom 3D model: woman_wearing_swimsuit.glb. Keep it beside index265.html. Wooden impact sounds unlock after your first interaction.');
 renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
@@ -1332,11 +1463,13 @@ renderer.setAnimationLoop((now, xrFrame) => {
   let steps = 0;
   while (accumulator >= fixedDt && steps < 4) {
     world.timestep = fixedDt;
-    world.step();
+    world.step(physicsEventQueue);
+    processPhysicsContactSounds();
     accumulator -= fixedDt;
     steps++;
   }
   if (steps === 4) accumulator = 0;
+  if (performance.now() - lastContactForceEventAt > CONTACT_EVENT_RELEASE_MS) contactSoundLatched = false;
   enforceFloorSafetyNet();
   syncVisual();
   renderer.render(scene, camera);
