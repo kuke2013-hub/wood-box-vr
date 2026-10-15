@@ -58,14 +58,18 @@
 <div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Only the lower front chest deforms while moving; rear-facing vertices are excluded and the model returns to its original shape at default chest gravity. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
 <div id="desktop-tuning" class="panel" aria-label="Soft chest and physics tuning">
   <div class="tune-title">SOFT CHEST & PHYSICS</div>
-  <p class="tune-copy">These controls are also available on a world-anchored panel beside the model inside VR/Passthrough. The lower chest mask is biased toward forward-facing surface normals; rear-facing vertices are excluded.</p>
+  <p class="tune-copy">These controls are also available on the fixed VR panel. Adjust the centre of the soft-tissue region in model-space X, Y and Z. A coloured XYZ marker follows the selected region. The opposite/back half is excluded.</p>
   <div class="tune-row"><div class="tune-label"><label for="chestResponseInput">Chest response</label><output id="chestResponseValue">1.00×</output></div><input id="chestResponseInput" type="range" min="0" max="2" step="0.05" value="1" /></div>
   <div class="tune-row"><div class="tune-label"><label for="chestStiffnessInput">Spring stiffness</label><output id="chestStiffnessValue">46</output></div><input id="chestStiffnessInput" type="range" min="10" max="100" step="1" value="46" /></div>
   <div class="tune-row"><div class="tune-label"><label for="chestDampingInput">Damping</label><output id="chestDampingValue">7.8</output></div><input id="chestDampingInput" type="range" min="0.5" max="16" step="0.1" value="7.8" /></div>
   <div class="tune-row"><div class="tune-label"><label for="chestInertiaInput">Movement inertia</label><output id="chestInertiaValue">0.88×</output></div><input id="chestInertiaInput" type="range" min="0" max="2" step="0.05" value="0.88" /></div>
   <div class="tune-row"><div class="tune-label"><label for="chestGravityInput">Chest tissue gravity</label><output id="chestGravityValue">0.00 m/s²</output></div><input id="chestGravityInput" type="range" min="0" max="1.2" step="0.05" value="0" /></div>
   <div class="tune-row"><div class="tune-label"><label for="worldGravityInput">Object gravity</label><output id="worldGravityValue">9.81 m/s²</output></div><input id="worldGravityInput" type="range" min="0" max="19.62" step="0.1" value="9.81" /></div>
-  <p class="tune-note">At the default chest-gravity setting, the model returns to its original resting geometry. Increasing chest tissue gravity adds a small downward sag. Object gravity affects falling and bouncing.</p>
+  <div class="tune-row"><div class="tune-label"><label for="chestRegionXInput">Region X · left / right</label><output id="chestRegionXValue">0 cm</output></div><input id="chestRegionXInput" type="range" min="-0.12" max="0.12" step="0.005" value="0" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestRegionYInput">Region Y · down / up</label><output id="chestRegionYValue">0 cm</output></div><input id="chestRegionYInput" type="range" min="-0.12" max="0.12" step="0.005" value="0" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestRegionZInput">Region Z · inward / front</label><output id="chestRegionZValue">0 cm</output></div><input id="chestRegionZInput" type="range" min="-0.08" max="0.08" step="0.005" value="0" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestFrontSideInput">Deform which side?</label><output id="chestFrontSideValue">AUTO</output></div><input id="chestFrontSideInput" type="range" min="-1" max="1" step="1" value="0" /></div>
+  <p class="tune-note">The 3D marker shows the centre of the soft-tissue region. X moves it left/right, Y down/up, and Z inward/outward on the selected surface. AUTO detects the likely front side; choose −Z or +Z if the wrong side is selected. The rear half is always excluded.</p>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -353,7 +357,13 @@ const physicsTuning = {
   chestDamping: 7.8,
   chestInertia: 0.88,
   chestGravity: 0.0,
-  worldGravity: 9.81
+  worldGravity: 9.81,
+  // Region offsets are measured in metres relative to the GLB's centred model space.
+  chestRegionX: 0.0,
+  chestRegionY: 0.0,
+  chestRegionZ: 0.0,
+  // 0 = automatic detection, -1 = the model's -Z side, +1 = its +Z side.
+  chestFrontSide: 0
 };
 // Required by Rapier for collision/contact-force event reporting.
 const physicsEventQueue = new RAPIER.EventQueue(true);
@@ -490,7 +500,12 @@ const softTissue = {
   accumulator: 0,
   phase: 0,
   chestCenterY: 0,
+  baseChestCenterY: 0,
+  widthHalfMeters: 0,
+  heightMeters: 0,
+  depthHalfMeters: 0,
   frontSign: 1,
+  detectedFrontSign: 1,
   weightedVertexCount: 0
 };
 const softTemp = {
@@ -513,10 +528,64 @@ const softTemp = {
   deltaQuaternion: new THREE.Quaternion()
 };
 
-// A physical, ray-interactive tuning panel attached to the viewer camera. It is visible
+// World-space XYZ gizmo for the deformation region. The depth-test-disabled axes stay
+// visible through the model, making it practical to position the target inside the torso.
+const chestRegionGizmo = new THREE.Group();
+chestRegionGizmo.name = 'Soft-region XYZ adjustment gizmo';
+chestRegionGizmo.visible = false;
+chestRegionGizmo.renderOrder = 2200;
+const gizmoDot = new THREE.Mesh(
+  new THREE.SphereGeometry(0.012, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false })
+);
+gizmoDot.renderOrder = 2201;
+chestRegionGizmo.add(gizmoDot);
+function addGizmoAxis(direction, color) {
+  const length = 0.075;
+  const axisGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0), direction.clone().multiplyScalar(length)
+  ]);
+  const axis = new THREE.Line(axisGeometry, new THREE.LineBasicMaterial({
+    color, depthTest: false, depthWrite: false, linewidth: 2
+  }));
+  axis.renderOrder = 2201;
+  chestRegionGizmo.add(axis);
+  const tip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0048, 8, 6),
+    new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false })
+  );
+  tip.position.copy(direction).multiplyScalar(length);
+  tip.renderOrder = 2202;
+  chestRegionGizmo.add(tip);
+}
+addGizmoAxis(new THREE.Vector3(1, 0, 0), 0xff5d62); // X = red
+addGizmoAxis(new THREE.Vector3(0, 1, 0), 0x48e08d); // Y = green
+addGizmoAxis(new THREE.Vector3(0, 0, 1), 0x168cff); // Z = blue
+scene.add(chestRegionGizmo);
+const chestRegionGizmoLocal = new THREE.Vector3();
+function updateChestRegionGizmo() {
+  if (!softTissue.parts.length || !vrTuningPanel.visible || !renderer.xr.isPresenting) {
+    chestRegionGizmo.visible = false;
+    return;
+  }
+  const selectedDepthRatio = THREE.MathUtils.clamp(0.55 + (physicsTuning.chestRegionZ / Math.max(softTissue.depthHalfMeters, 1e-5)) * 0.45, 0.08, 0.94);
+  const selectedFrontDepth = Math.max(0.008, softTissue.depthHalfMeters * selectedDepthRatio);
+  chestRegionGizmoLocal.set(
+    physicsTuning.chestRegionX,
+    softTissue.chestCenterY,
+    softTissue.frontSign * selectedFrontDepth
+  );
+  const scale = boxVisual.scale.x || 1;
+  chestRegionGizmo.position.copy(chestRegionGizmoLocal).multiplyScalar(scale).applyQuaternion(boxVisual.quaternion).add(boxVisual.position);
+  chestRegionGizmo.quaternion.copy(boxVisual.quaternion);
+  chestRegionGizmo.scale.setScalar(scale);
+  chestRegionGizmo.visible = true;
+}
+
+// A physical, ray-interactive tuning panel in world space. It is visible
 // inside immersive VR/Passthrough; desktop users get matching HTML range sliders.
 const VR_TUNING_W = 640;
-const VR_TUNING_H = 1120;
+const VR_TUNING_H = 1420;
 const VR_TUNING_PANEL_WIDTH = 0.43;
 const VR_TUNING_PANEL_HEIGHT = VR_TUNING_PANEL_WIDTH * VR_TUNING_H / VR_TUNING_W;
 const tuningCanvas = document.createElement('canvas');
@@ -585,15 +654,20 @@ function placeVRTuningPanelInWorld(xrFrame, now) {
   tuningPanelPlacedForSession = true;
   vrTuningPanel.updateMatrixWorld(true);
   drawVRTuningPanel();
+  updateChestRegionGizmo();
 }
 
 const tuningRows = [
-  { id: 'chestResponse', label: 'CHEST RESPONSE', min: 0, max: 2, step: 0.05, y: 160, input: 'chestResponseInput', output: 'chestResponseValue', format: v => `${v.toFixed(2)}×` },
-  { id: 'chestStiffness', label: 'SPRING STIFFNESS', min: 10, max: 100, step: 1, y: 310, input: 'chestStiffnessInput', output: 'chestStiffnessValue', format: v => `${v.toFixed(0)}` },
-  { id: 'chestDamping', label: 'DAMPING', min: 0.5, max: 16, step: 0.1, y: 460, input: 'chestDampingInput', output: 'chestDampingValue', format: v => `${v.toFixed(1)}` },
-  { id: 'chestInertia', label: 'MOVEMENT INERTIA', min: 0, max: 2, step: 0.05, y: 610, input: 'chestInertiaInput', output: 'chestInertiaValue', format: v => `${v.toFixed(2)}×` },
-  { id: 'chestGravity', label: 'CHEST TISSUE GRAVITY', min: 0, max: 1.2, step: 0.05, y: 760, input: 'chestGravityInput', output: 'chestGravityValue', format: v => `${v.toFixed(2)} m/s²` },
-  { id: 'worldGravity', label: 'OBJECT GRAVITY', min: 0, max: 19.62, step: 0.1, y: 910, input: 'worldGravityInput', output: 'worldGravityValue', format: v => `${v.toFixed(1)} m/s²` }
+  { id: 'chestResponse', label: 'CHEST RESPONSE', min: 0, max: 2, step: 0.05, y: 140, input: 'chestResponseInput', output: 'chestResponseValue', format: v => `${v.toFixed(2)}×`, minText: '0', maxText: '2.00' },
+  { id: 'chestStiffness', label: 'SPRING STIFFNESS', min: 10, max: 100, step: 1, y: 246, input: 'chestStiffnessInput', output: 'chestStiffnessValue', format: v => `${v.toFixed(0)}`, minText: '10', maxText: '100' },
+  { id: 'chestDamping', label: 'DAMPING', min: 0.5, max: 16, step: 0.1, y: 352, input: 'chestDampingInput', output: 'chestDampingValue', format: v => `${v.toFixed(1)}`, minText: '0.5', maxText: '16' },
+  { id: 'chestInertia', label: 'MOVEMENT INERTIA', min: 0, max: 2, step: 0.05, y: 458, input: 'chestInertiaInput', output: 'chestInertiaValue', format: v => `${v.toFixed(2)}×`, minText: '0', maxText: '2.00' },
+  { id: 'chestGravity', label: 'CHEST TISSUE GRAVITY', min: 0, max: 1.2, step: 0.05, y: 564, input: 'chestGravityInput', output: 'chestGravityValue', format: v => `${v.toFixed(2)} m/s²`, minText: '0', maxText: '1.2' },
+  { id: 'worldGravity', label: 'OBJECT GRAVITY', min: 0, max: 19.62, step: 0.1, y: 670, input: 'worldGravityInput', output: 'worldGravityValue', format: v => `${v.toFixed(1)} m/s²`, minText: '0', maxText: '19.6' },
+  { id: 'chestRegionX', label: 'REGION X · LEFT ↔ RIGHT', min: -0.12, max: 0.12, step: 0.005, y: 850, input: 'chestRegionXInput', output: 'chestRegionXValue', format: v => `${v >= 0 ? '+' : ''}${Math.round(v * 100)} cm`, minText: '−12 cm', maxText: '+12 cm', digits: 2 },
+  { id: 'chestRegionY', label: 'REGION Y · DOWN ↔ UP', min: -0.12, max: 0.12, step: 0.005, y: 955, input: 'chestRegionYInput', output: 'chestRegionYValue', format: v => `${v >= 0 ? '+' : ''}${Math.round(v * 100)} cm`, minText: '−12 cm', maxText: '+12 cm', digits: 2 },
+  { id: 'chestRegionZ', label: 'REGION Z · INWARD ↔ FRONT', min: -0.08, max: 0.08, step: 0.005, y: 1060, input: 'chestRegionZInput', output: 'chestRegionZValue', format: v => `${v >= 0 ? '+' : ''}${Math.round(v * 100)} cm`, minText: '−8 cm', maxText: '+8 cm', digits: 2 },
+  { id: 'chestFrontSide', label: 'DEFORM WHICH SURFACE?', min: -1, max: 1, step: 1, y: 1165, input: 'chestFrontSideInput', output: 'chestFrontSideValue', format: v => v === 0 ? 'AUTO' : (v < 0 ? '−Z SIDE' : '+Z SIDE'), minText: '−Z', maxText: '+Z', digits: 0 }
 ];
 
 function roundRect(ctx, x, y, width, height, radius) {
@@ -608,29 +682,40 @@ function drawVRTuningPanel() {
   const ctx = tuningContext;
   ctx.clearRect(0, 0, VR_TUNING_W, VR_TUNING_H);
   roundRect(ctx, 8, 8, VR_TUNING_W - 16, VR_TUNING_H - 16, 28);
-  ctx.fillStyle = 'rgba(12,17,19,0.96)'; ctx.fill();
+  ctx.fillStyle = 'rgba(12,17,19,0.97)'; ctx.fill();
   ctx.strokeStyle = 'rgba(219,235,225,0.48)'; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = '#e6f0e7'; ctx.font = '700 31px Arial'; ctx.fillText('SOFT CHEST & PHYSICS', 36, 58);
-  ctx.fillStyle = '#a9bbb0'; ctx.font = '20px Arial'; ctx.fillText('FRONT CHEST ONLY · BACK PRESERVED', 38, 92);
+  ctx.fillStyle = '#a9bbb0'; ctx.font = '19px Arial'; ctx.fillText('Tune motion, then move the XYZ target marker', 38, 92);
   ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(34, 116); ctx.lineTo(606, 116); ctx.stroke();
+
   for (const row of tuningRows) {
+    if (row.id === 'chestRegionX') {
+      ctx.strokeStyle = 'rgba(255,255,255,0.20)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(34, 778); ctx.lineTo(606, 778); ctx.stroke();
+      ctx.fillStyle = '#e6f0e7'; ctx.font = '700 22px Arial'; ctx.textAlign = 'left';
+      ctx.fillText('MOVE THE REGION IN 3D SPACE', 36, 805);
+      ctx.fillStyle = '#a9bbb0'; ctx.font = '17px Arial';
+      ctx.fillText('X red · Y green · Z blue · marker is on the model', 38, 829);
+    }
     const value = physicsTuning[row.id];
-    const x1 = 54, x2 = 586, trackY = row.y + 32;
-    ctx.fillStyle = '#f2f3ed'; ctx.font = '700 22px Arial'; ctx.textAlign = 'left'; ctx.fillText(row.label, 42, row.y);
-    ctx.fillStyle = '#c9e7d0'; ctx.font = '22px Arial'; ctx.textAlign = 'right'; ctx.fillText(row.format(value), 596, row.y);
+    const x1 = 54, x2 = 586, trackY = row.y + 30;
+    ctx.fillStyle = '#f2f3ed'; ctx.font = '700 20px Arial'; ctx.textAlign = 'left'; ctx.fillText(row.label, 42, row.y);
+    ctx.fillStyle = '#c9e7d0'; ctx.font = '20px Arial'; ctx.textAlign = 'right'; ctx.fillText(row.format(value), 596, row.y);
     ctx.textAlign = 'left';
     roundRect(ctx, x1, trackY - 6, x2 - x1, 12, 6); ctx.fillStyle = '#37433d'; ctx.fill();
     const ratio = (value - row.min) / (row.max - row.min);
-    roundRect(ctx, x1, trackY - 6, Math.max(12, (x2 - x1) * ratio), 12, 6); ctx.fillStyle = '#a6d7b2'; ctx.fill();
-    ctx.beginPath(); ctx.arc(x1 + (x2 - x1) * ratio, trackY, 16, 0, Math.PI * 2); ctx.fillStyle = '#f4f5ec'; ctx.fill();
-    ctx.fillStyle = '#90a197'; ctx.font = '17px Arial'; ctx.fillText(row.min.toFixed(row.step < 1 ? (row.id === 'worldGravity' ? 1 : 1) : 0), x1, trackY + 34);
-    ctx.textAlign = 'right'; ctx.fillText(row.max.toFixed(row.step < 1 ? 1 : 0), x2, trackY + 34); ctx.textAlign = 'left';
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(34, row.y + 72); ctx.lineTo(606, row.y + 72); ctx.stroke();
+    roundRect(ctx, x1, trackY - 6, Math.max(12, (x2 - x1) * ratio), 12, 6); ctx.fillStyle = row.id.startsWith('chestRegion') ? '#55a9ff' : (row.id === 'chestFrontSide' ? '#c3b2ff' : '#a6d7b2'); ctx.fill();
+    ctx.beginPath(); ctx.arc(x1 + (x2 - x1) * ratio, trackY, 15, 0, Math.PI * 2); ctx.fillStyle = '#f4f5ec'; ctx.fill();
+    const minText = row.minText ?? row.min.toFixed(row.step < 1 ? 1 : 0);
+    const maxText = row.maxText ?? row.max.toFixed(row.step < 1 ? 1 : 0);
+    ctx.fillStyle = '#90a197'; ctx.font = '16px Arial'; ctx.fillText(minText, x1, trackY + 31);
+    ctx.textAlign = 'right'; ctx.fillText(maxText, x2, trackY + 31); ctx.textAlign = 'left';
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(34, row.y + 69); ctx.lineTo(606, row.y + 69); ctx.stroke();
   }
-  ctx.fillStyle = '#d5e6d9'; ctx.font = '700 19px Arial'; ctx.textAlign = 'center';
-  ctx.fillText('BLUE DOT SHOWS POINTER · HOLD TRIGGER AND DRAG', VR_TUNING_W / 2, 1070);
-  ctx.fillStyle = '#9fb0a5'; ctx.font = '17px Arial';
-  ctx.fillText('Tracked hands: pinch a slider and move your hand.', VR_TUNING_W / 2, 1096);
+  ctx.fillStyle = '#d5e6d9'; ctx.font = '700 18px Arial'; ctx.textAlign = 'center';
+  ctx.fillText('BLUE DOT = POINTER · HOLD TRIGGER AND DRAG', VR_TUNING_W / 2, 1320);
+  ctx.fillStyle = '#9fb0a5'; ctx.font = '16px Arial';
+  ctx.fillText('Move X/Y/Z to reposition the region marker; select −Z / AUTO / +Z', VR_TUNING_W / 2, 1352);
   ctx.textAlign = 'left';
   tuningTexture.needsUpdate = true;
 }
@@ -652,6 +737,12 @@ function setTuningParameter(id, rawValue) {
   if (Math.abs(physicsTuning[id] - value) < 1e-6) return;
   physicsTuning[id] = value;
   if (id === 'worldGravity') { world.gravity.y = -value; if (boxBody) boxBody.wakeUp(); }
+  if (id === 'chestRegionX' || id === 'chestRegionY' || id === 'chestRegionZ' || id === 'chestFrontSide') {
+    refreshSoftTissueWeights();
+    updateChestRegionGizmo();
+    resetSoftTissueDynamics(true);
+    if (boxBody) boxBody.wakeUp();
+  }
   updateTuningReadouts();
 }
 for (const row of tuningRows) {
@@ -766,7 +857,7 @@ function endVRTuningInteraction(state) {
   state.vrTuningActive = false;
   state.vrTuningSlider = null;
   state.vrTuningFromHand = false;
-  setStatus('Physics settings updated. Chest motion affects the front chest surface only; object gravity controls falling and bouncing.');
+  setStatus('Settings updated. The coloured XYZ marker shows the soft-tissue region centre; the opposite/back half stays excluded.');
 }
 function updateVRTuningInteractions() {
   for (const state of controllerStates) {
@@ -812,6 +903,53 @@ function resetSoftTissueDynamics(restoreGeometry = true) {
   if (restoreGeometry && softTissue.deformed) restoreSoftTissueGeometry();
 }
 
+function refreshSoftTissueWeights() {
+  if (!softTissue.parts.length || softTissue.heightMeters <= 0 || softTissue.widthHalfMeters <= 0 || softTissue.depthHalfMeters <= 0) return;
+  softTissue.frontSign = physicsTuning.chestFrontSide === 0
+    ? softTissue.detectedFrontSign
+    : Math.sign(physicsTuning.chestFrontSide);
+  softTissue.chestCenterY = softTissue.baseChestCenterY + physicsTuning.chestRegionY;
+  softTissue.weightedVertexCount = 0;
+  const fullHeight = softTissue.heightMeters;
+  const widthHalf = softTissue.widthHalfMeters;
+  const depthHalf = softTissue.depthHalfMeters;
+  const offsetX = physicsTuning.chestRegionX;
+  const offsetY = physicsTuning.chestRegionY;
+  const offsetZ = physicsTuning.chestRegionZ;
+
+  for (const part of softTissue.parts) {
+    const positions = part.normalizedRootPositions;
+    const weights = part.weights;
+    for (let i = 0; i < weights.length; i++) {
+      const k = i * 3;
+      const x = positions[k], y = positions[k + 1], z = positions[k + 2];
+      const yNorm = (y + fullHeight * 0.5) / fullHeight;
+      // Shift the vertical band by the selected Y-axis amount, without moving any mesh vertices.
+      const shiftedYNorm = yNorm - offsetY / fullHeight;
+      const vertical = THREE.MathUtils.smoothstep(shiftedYNorm, 0.41, 0.48) *
+        (1 - THREE.MathUtils.smoothstep(shiftedYNorm, 0.58, 0.66));
+      // Translate the lateral mask to move the region left/right across the torso.
+      const xNorm = Math.abs((x - offsetX) / widthHalf);
+      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.22, 0.57);
+      // Positive Z means further toward the selected front surface. Crucially, the hard
+      // hemisphere gate below always assigns zero weight to vertices on the opposite/back side.
+      const signedFrontDepth = (z / depthHalf) * softTissue.frontSign;
+      const targetFrontDepth = THREE.MathUtils.clamp(0.55 + (offsetZ / depthHalf) * 0.45, 0.08, 0.94);
+      // Shape a soft depth band around the selected Z target rather than using a one-way
+      // threshold. This makes the Z control visibly move the area inward/outward. A hard
+      // signed-depth gate still forbids deformation on the opposite/back half of the model.
+      const depthDistance = Math.abs(signedFrontDepth - targetFrontDepth);
+      const frontDepthWeight = signedFrontDepth <= 0.02
+        ? 0
+        : 1 - THREE.MathUtils.smoothstep(depthDistance, 0.28, 0.66);
+      weights[i] = vertical * lateral * frontDepthWeight;
+      if (weights[i] > 0.03) softTissue.weightedVertexCount++;
+    }
+  }
+  console.info(`Soft-region updated: ${softTissue.weightedVertexCount} weighted vertices; X ${offsetX.toFixed(3)}m, Y ${offsetY.toFixed(3)}m, Z ${offsetZ.toFixed(3)}m; selected surface ${softTissue.frontSign > 0 ? '+Z' : '-Z'}. The opposite/back half is locked out.`);
+  updateChestRegionGizmo();
+}
+
 function prepareSoftTissueDeformation(clone) {
   softTissue.parts = [];
   softTissue.deformed = false;
@@ -821,8 +959,8 @@ function prepareSoftTissueDeformation(clone) {
   const rootBounds = new THREE.Box3();
   const entries = [];
 
-  // Clone each buffer geometry before editing, because GLTFLoader geometry can be shared
-  // by the source template. Use clone-root coordinates so nested mesh transforms are handled.
+  // Clone each buffer geometry before editing because GLTFLoader may share geometry. Store
+  // original coordinates/normals exactly and compute all offsets in centred model metres.
   clone.traverse(node => {
     if (!node.isMesh || !node.geometry || !node.geometry.attributes.position) return;
     node.geometry = node.geometry.clone();
@@ -849,7 +987,6 @@ function prepareSoftTissueDeformation(clone) {
       rootPositions[k + 1] = softTemp.rootPoint.y;
       rootPositions[k + 2] = softTemp.rootPoint.z;
       rootBounds.expandByPoint(softTemp.rootPoint);
-
       softTemp.localNormal.set(originalNormals[k], originalNormals[k + 1], originalNormals[k + 2]);
       softTemp.rootNormal.copy(softTemp.localNormal).applyMatrix3(normalToRoot).normalize();
       rootNormals[k] = softTemp.rootNormal.x;
@@ -869,24 +1006,23 @@ function prepareSoftTissueDeformation(clone) {
   const widthHalf = Math.max(rootSize.x * 0.5, 1e-5);
   const height = Math.max(rootSize.y, 1e-5);
   const depthHalf = Math.max(rootSize.z * 0.5, 1e-5);
-  // The previous mask centred near 66.5% of total model height, which placed the
-  // strongest motion too close to the neck/head on this GLB. Move the spring centre down
-  // to the middle of the chest and use a narrower vertical band below the shoulder line.
+  // Retain the current lower torso centre as the neutral point; the new XYZ offsets are
+  // applied relative to this position so opening the new controls does not reset the model.
   const CHEST_CENTER_HEIGHT = 0.535;
-  softTissue.chestCenterY = (rootBounds.min.y + height * CHEST_CENTER_HEIGHT - rootCenter.y) * noraModelScale;
+  softTissue.baseChestCenterY = (rootBounds.min.y + height * CHEST_CENTER_HEIGHT - rootCenter.y) * noraModelScale;
+  softTissue.widthHalfMeters = widthHalf * noraModelScale;
+  softTissue.heightMeters = height * noraModelScale;
+  softTissue.depthHalfMeters = depthHalf * noraModelScale;
 
-  // Infer which Z side is the front from the central, lower chest region itself. Avoid
-  // including the head/neck in this test: the nose can protrude and incorrectly bias the
-  // front-axis estimate upward.
+  // Infer the likely front side using only the lower/central torso, avoiding the nose/head.
   const positiveChestDepths = [];
   const negativeChestDepths = [];
   for (const entry of entries) {
-    const count = entry.positionAttribute.count;
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < entry.positionAttribute.count; i++) {
       const k = i * 3;
       const yNorm = (entry.rootPositions[k + 1] - rootBounds.min.y) / height;
       const xNorm = Math.abs((entry.rootPositions[k] - rootCenter.x) / widthHalf);
-      if (yNorm < 0.42 || yNorm > 0.66 || xNorm > 0.54) continue;
+      if (yNorm < 0.40 || yNorm > 0.68 || xNorm > 0.58) continue;
       const signedDepth = (entry.rootPositions[k + 2] - rootCenter.z) / depthHalf;
       if (signedDepth > 0.06) positiveChestDepths.push(signedDepth);
       else if (signedDepth < -0.06) negativeChestDepths.push(-signedDepth);
@@ -899,10 +1035,8 @@ function prepareSoftTissueDeformation(clone) {
   };
   const positiveEnvelope = percentile(positiveChestDepths, 0.88);
   const negativeEnvelope = percentile(negativeChestDepths, 0.88);
-  // Reverse the prior face choice: that revision drove the wobble on the far/back surface.
-  // Select the opposite Z face and retain both depth and normal masks so the rear stays still.
-  softTissue.frontSign = negativeEnvelope > positiveEnvelope * 1.06 ? -1 : 1;
-  softTissue.weightedVertexCount = 0;
+  softTissue.detectedFrontSign = negativeEnvelope > positiveEnvelope * 1.06 ? -1 : 1;
+  softTissue.frontSign = physicsTuning.chestFrontSide === 0 ? softTissue.detectedFrontSign : Math.sign(physicsTuning.chestFrontSide);
 
   for (const entry of entries) {
     const count = entry.positionAttribute.count;
@@ -910,40 +1044,17 @@ function prepareSoftTissueDeformation(clone) {
     const weights = new Float32Array(count);
     for (let i = 0; i < count; i++) {
       const k = i * 3;
-      const x = (entry.rootPositions[k] - rootCenter.x) * noraModelScale;
-      const y = (entry.rootPositions[k + 1] - rootCenter.y) * noraModelScale;
-      const z = (entry.rootPositions[k + 2] - rootCenter.z) * noraModelScale;
-      normalizedRootPositions[k] = x;
-      normalizedRootPositions[k + 1] = y;
-      normalizedRootPositions[k + 2] = z;
-
-      const yNorm = (entry.rootPositions[k + 1] - rootBounds.min.y) / height;
-      const xNorm = Math.abs((entry.rootPositions[k] - rootCenter.x) / widthHalf);
-      // Localise the effect to the lower front chest: the strongest weights are between
-      // 48% and 58% of model height, with a smooth falloff below and above. The top edge
-      // fades out before the shoulder/neck region, avoiding the earlier head-high bounce.
-      const vertical = THREE.MathUtils.smoothstep(yNorm, 0.41, 0.48) *
-        (1 - THREE.MathUtils.smoothstep(yNorm, 0.58, 0.66));
-      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.22, 0.57);
-      const signedFrontDepth = ((entry.rootPositions[k + 2] - rootCenter.z) / depthHalf) * softTissue.frontSign;
-      // Keep the original one-sided 'squish' approach, but use a softer depth ramp. The
-      // selected front surface and its near-side transition can move; the midline fades
-      // smoothly to zero and every vertex on the rear half has exactly zero weight. Do not
-      // use a normal-direction mask here: some GLB parts have inconsistent/smoothed normals,
-      // which was excluding the chest altogether in the previous version.
-      const frontDepthWeight = THREE.MathUtils.smoothstep(signedFrontDepth, 0.035, 0.30);
-      weights[i] = vertical * lateral * frontDepthWeight;
-      if (weights[i] > 0.03) softTissue.weightedVertexCount++;
+      normalizedRootPositions[k] = (entry.rootPositions[k] - rootCenter.x) * noraModelScale;
+      normalizedRootPositions[k + 1] = (entry.rootPositions[k + 1] - rootCenter.y) * noraModelScale;
+      normalizedRootPositions[k + 2] = (entry.rootPositions[k + 2] - rootCenter.z) * noraModelScale;
     }
-
-    // Enlarge the frustum sphere by a small amount, so the wobbled vertices are not
-    // clipped when the object approaches the edge of the desktop/VR camera view.
     if (!entry.geometry.boundingSphere) entry.geometry.computeBoundingSphere();
     if (entry.geometry.boundingSphere) entry.geometry.boundingSphere.radius += 0.075 / Math.max(noraModelScale, 1e-5);
-
     softTissue.parts.push({ ...entry, normalizedRootPositions, weights });
   }
-  console.info(`Soft-tissue mask prepared across ${softTissue.parts.length} GLB mesh(es); ${softTissue.weightedVertexCount} lower-front-chest vertices, forward side ${softTissue.frontSign > 0 ? '+Z' : '-Z'}. Rear-facing/side vertices are excluded.`);
+  refreshSoftTissueWeights();
+  updateChestRegionGizmo();
+  console.info(`Soft-tissue mask prepared across ${softTissue.parts.length} GLB mesh(es). You can move the centre in XYZ from the VR panel.`);
 }
 
 function decorateNoraMeshes(root) {
@@ -1049,6 +1160,8 @@ function updateSoftTissueDynamics(frameDt) {
   const sz = THREE.MathUtils.clamp(-acceleration.z * 0.0028 + bellyVelocity.z * 0.045, -0.18, 0.18);
   const chestResponse = physicsTuning.chestResponse;
   const rippleAmplitude = Math.min(0.010, bellyVelocity.length() * 0.010 + acceleration.length() * 0.00017) * chestResponse;
+  const regionDepthRatio = THREE.MathUtils.clamp(0.55 + (physicsTuning.chestRegionZ / Math.max(softTissue.depthHalfMeters, 1e-5)) * 0.45, 0.08, 0.94);
+  const regionCenterZ = softTissue.frontSign * softTissue.depthHalfMeters * regionDepthRatio;
 
   for (const part of softTissue.parts) {
     const output = part.positionAttribute.array;
@@ -1064,11 +1177,15 @@ function updateSoftTissueDynamics(frameDt) {
         output[k] = original[k]; output[k + 1] = original[k + 1]; output[k + 2] = original[k + 2];
         continue;
       }
-      const x = base[k], y = base[k + 1], z = base[k + 2];
-      const wave = Math.sin(softTissue.phase + (y - softTissue.chestCenterY) * 86 + z * 28 + x * 18) * rippleAmplitude * weight;
+      // Calculate the response relative to the adjustable XYZ region centre. Moving any
+      // axis therefore moves both the weight mask and its local ripple field together.
+      const x = base[k] - physicsTuning.chestRegionX;
+      const y = base[k + 1] - softTissue.chestCenterY;
+      const z = base[k + 2] - regionCenterZ;
+      const wave = Math.sin(softTissue.phase + y * 86 + z * 28 + x * 18) * rippleAmplitude * weight;
       softTemp.rootDelta.set(
         softTissue.offset.x * weight + x * sx * weight + normals[k] * wave,
-        softTissue.offset.y * weight + (y - softTissue.chestCenterY) * sy * weight + normals[k + 1] * wave,
+        softTissue.offset.y * weight + y * sy * weight + normals[k + 1] * wave,
         softTissue.offset.z * weight + z * sz * weight + normals[k + 2] * wave
       ).multiplyScalar(1 / Math.max(noraModelScale, 1e-6));
       softTemp.localDelta.copy(softTemp.rootDelta).applyMatrix3(part.inverseLinear);
@@ -1133,9 +1250,10 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
       syncVisual();
     }
     resetSoftTissueDynamics(false);
+    updateChestRegionGizmo();
     setStatus(softTissue.weightedVertexCount > 20
-      ? `3D model loaded. Lower-front-chest soft motion is active (${softTissue.weightedVertexCount} weighted vertices; rear-facing vertices are excluded).`
-      : `3D model loaded, but only ${softTissue.weightedVertexCount} chest vertices matched the soft-motion mask. Check the browser console if chest movement remains invisible.`);
+      ? `3D model loaded. Soft region active on ${softTissue.weightedVertexCount} vertices. Adjust X/Y/Z with the VR panel; the opposite/back half is excluded.`
+      : `3D model loaded, but only ${softTissue.weightedVertexCount} vertices are inside the soft-region mask. Use the panel's XYZ controls and surface-side selector to reposition it.`);
     console.info(`woman_wearing_swimsuit.glb loaded. Model normalized to ${CUBE_SIZE.toFixed(2)} m maximum size.`);
   } catch (error) {
     console.error('Could not prepare woman_wearing_swimsuit.glb:', error);
@@ -2012,6 +2130,7 @@ renderer.xr.addEventListener('sessionstart', () => {
   const isPassthrough = requestedSessionMode === 'immersive-ar' || (session && session.environmentBlendMode && session.environmentBlendMode !== 'opaque');
   vrTuningPanel.visible = false;
   tuningPanelPlacedForSession = false;
+  chestRegionGizmo.visible = false;
   drawVRTuningPanel();
   setPassthroughVisualMode(isPassthrough);
   camera.position.set(0, 0, 0);
@@ -2042,6 +2161,7 @@ renderer.xr.addEventListener('sessionstart', () => {
 });
 renderer.xr.addEventListener('sessionend', () => {
   vrTuningPanel.visible = false;
+  chestRegionGizmo.visible = false;
   tuningPanelPlacedForSession = false;
   setPassthroughVisualMode(false);
   requestedSessionMode = 'immersive-vr';
@@ -2099,7 +2219,7 @@ function processPhysicsContactSounds() {
 }
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Loading woman_wearing_swimsuit.glb. The model starts a little closer. Aim at the fixed tuning panel; a blue dot shows exactly where the controller ray lands. Hold trigger and drag a slider. Chest wobble is limited to the detected front surface; the blue dot tracks the controller ray on the tuning panel.');
+setStatus('Loading woman_wearing_swimsuit.glb. In VR, use the fixed panel XYZ sliders to move the soft-tissue region. The coloured marker follows its centre; the opposite/back half remains excluded.');
 renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
@@ -2129,6 +2249,7 @@ renderer.setAnimationLoop((now, xrFrame) => {
   enforceFloorSafetyNet();
   syncVisual();
   updateSoftTissueDynamics(frameDt);
+  updateChestRegionGizmo();
   renderer.render(scene, camera);
 });
 </script>
