@@ -535,25 +535,25 @@ vrTuningPanel.name = 'In-headset soft chest and physics settings';
 vrTuningPanel.position.set(0.55, 0.95, -0.96);
 vrTuningPanel.renderOrder = 1000;
 vrTuningPanel.visible = false;
-// A visible blue target sits exactly at the controller/hand ray intersection on the panel.
-// It is a child of the panel, so its position is measured in panel-local coordinates.
+// A prominent blue target sits exactly where the controller ray hits the settings panel.
+// It is a child of the panel so its position stays pixel-aligned with the drawn slider track.
 const tuningPointerDot = new THREE.Group();
 tuningPointerDot.name = 'Blue tuning-panel pointer';
 tuningPointerDot.visible = false;
 const pointerOuter = new THREE.Mesh(
-  new THREE.CircleGeometry(0.014, 28),
+  new THREE.CircleGeometry(0.018, 32),
   new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, side: THREE.DoubleSide })
 );
 pointerOuter.position.z = 0;
 pointerOuter.renderOrder = 1002;
 const pointerInner = new THREE.Mesh(
-  new THREE.CircleGeometry(0.009, 28),
-  new THREE.MeshBasicMaterial({ color: 0x168bff, depthTest: false, depthWrite: false, side: THREE.DoubleSide })
+  new THREE.CircleGeometry(0.012, 32),
+  new THREE.MeshBasicMaterial({ color: 0x087cff, depthTest: false, depthWrite: false, side: THREE.DoubleSide })
 );
 pointerInner.position.z = 0.002;
 pointerInner.renderOrder = 1003;
 tuningPointerDot.add(pointerOuter, pointerInner);
-tuningPointerDot.position.z = 0.009;
+tuningPointerDot.position.z = 0.018;
 tuningPointerDot.renderOrder = 1002;
 vrTuningPanel.add(tuningPointerDot);
 // Keep the adjustment panel in world space, not parented to the headset camera.
@@ -660,10 +660,13 @@ for (const row of tuningRows) {
 }
 updateTuningReadouts();
 
-const tuningRaycaster = new THREE.Raycaster();
 const tuningRayOrigin = new THREE.Vector3();
 const tuningRayDirection = new THREE.Vector3();
 const tuningRayQuaternion = new THREE.Quaternion();
+const tuningInversePanelMatrix = new THREE.Matrix4();
+const tuningLocalRayOrigin = new THREE.Vector3();
+const tuningLocalRayDirection = new THREE.Vector3();
+const tuningLocalHit = new THREE.Vector3();
 function tuningUVFromWorldPoint(worldPoint, tolerance = 0.14) {
   if (!vrTuningPanel.visible) return null;
   vrTuningPanel.updateWorldMatrix(true, false);
@@ -681,11 +684,21 @@ function tuningUVFromController(state) {
   controller.getWorldPosition(tuningRayOrigin);
   controller.getWorldQuaternion(tuningRayQuaternion);
   tuningRayDirection.set(0, 0, -1).applyQuaternion(tuningRayQuaternion).normalize();
-  tuningRaycaster.set(tuningRayOrigin, tuningRayDirection);
-  const hits = tuningRaycaster.intersectObject(vrTuningPanel, false);
-  if (!hits.length || !hits[0].uv) return null;
-  const uv = hits[0].uv;
-  return { u: uv.x, v: uv.y, canvasX: uv.x * VR_TUNING_W, canvasY: (1 - uv.y) * VR_TUNING_H };
+
+  // Calculate the ray/plane intersection in panel-local coordinates instead of relying on
+  // mesh raycasting. This is stable for a double-sided canvas panel in WebXR and makes the
+  // blue dot land on the exact point of the visible slider under the controller pointer.
+  tuningInversePanelMatrix.copy(vrTuningPanel.matrixWorld).invert();
+  tuningLocalRayOrigin.copy(tuningRayOrigin).applyMatrix4(tuningInversePanelMatrix);
+  tuningLocalRayDirection.copy(tuningRayDirection).transformDirection(tuningInversePanelMatrix);
+  if (Math.abs(tuningLocalRayDirection.z) < 1e-6) return null;
+  const distance = -tuningLocalRayOrigin.z / tuningLocalRayDirection.z;
+  if (distance < 0) return null;
+  tuningLocalHit.copy(tuningLocalRayDirection).multiplyScalar(distance).add(tuningLocalRayOrigin);
+  if (Math.abs(tuningLocalHit.x) > VR_TUNING_PANEL_WIDTH / 2 || Math.abs(tuningLocalHit.y) > VR_TUNING_PANEL_HEIGHT / 2) return null;
+  const u = tuningLocalHit.x / VR_TUNING_PANEL_WIDTH + 0.5;
+  const v = tuningLocalHit.y / VR_TUNING_PANEL_HEIGHT + 0.5;
+  return { u, v, canvasX: u * VR_TUNING_W, canvasY: (1 - v) * VR_TUNING_H };
 }
 function updateTuningPointer() {
   if (!vrTuningPanel.visible || !renderer.xr.isPresenting) {
@@ -888,7 +901,7 @@ function prepareSoftTissueDeformation(clone) {
   const negativeEnvelope = percentile(negativeChestDepths, 0.88);
   // Reverse the prior face choice: that revision drove the wobble on the far/back surface.
   // Select the opposite Z face and retain both depth and normal masks so the rear stays still.
-  softTissue.frontSign = negativeEnvelope > positiveEnvelope * 1.06 ? 1 : -1;
+  softTissue.frontSign = negativeEnvelope > positiveEnvelope * 1.06 ? -1 : 1;
   softTissue.weightedVertexCount = 0;
 
   for (const entry of entries) {
@@ -913,12 +926,13 @@ function prepareSoftTissueDeformation(clone) {
         (1 - THREE.MathUtils.smoothstep(yNorm, 0.58, 0.66));
       const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.22, 0.57);
       const signedFrontDepth = ((entry.rootPositions[k + 2] - rootCenter.z) / depthHalf) * softTissue.frontSign;
-      const frontDepthWeight = THREE.MathUtils.smoothstep(signedFrontDepth, 0.015, 0.32);
-      // Add a front-facing-normal mask as well as the depth mask. Rear-facing and side
-      // vertices receive zero displacement; their original normals are restored below.
-      const frontNormalDot = entry.rootNormals[k + 2] * softTissue.frontSign;
-      const frontNormalWeight = THREE.MathUtils.smoothstep(frontNormalDot, 0.05, 0.50);
-      weights[i] = vertical * lateral * frontDepthWeight * frontNormalWeight;
+      // Keep the original one-sided 'squish' approach, but use a softer depth ramp. The
+      // selected front surface and its near-side transition can move; the midline fades
+      // smoothly to zero and every vertex on the rear half has exactly zero weight. Do not
+      // use a normal-direction mask here: some GLB parts have inconsistent/smoothed normals,
+      // which was excluding the chest altogether in the previous version.
+      const frontDepthWeight = THREE.MathUtils.smoothstep(signedFrontDepth, 0.035, 0.30);
+      weights[i] = vertical * lateral * frontDepthWeight;
       if (weights[i] > 0.03) softTissue.weightedVertexCount++;
     }
 
@@ -2085,7 +2099,7 @@ function processPhysicsContactSounds() {
 }
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Loading woman_wearing_swimsuit.glb. The model starts a little closer. Aim at the fixed tuning panel; a blue dot shows exactly where the controller ray lands. Hold trigger and drag a slider. Chest wobble targets the opposite/front surface from the previous revision.');
+setStatus('Loading woman_wearing_swimsuit.glb. The model starts a little closer. Aim at the fixed tuning panel; a blue dot shows exactly where the controller ray lands. Hold trigger and drag a slider. Chest wobble is limited to the detected front surface; the blue dot tracks the controller ray on the tuning panel.');
 renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
