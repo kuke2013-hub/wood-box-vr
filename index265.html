@@ -41,12 +41,12 @@
 <div id="hud">
   <div class="panel">
     <h1>Single 3D Object VR</h1>
-    <div id="summary">Enter VR or Passthrough. Grab and throw woman_wearing_swimsuit.glb, resize it with both hands, and hear short wooden knocks on impacts.</div>
+    <div id="summary">Enter VR or Passthrough. Grab and throw woman_wearing_swimsuit.glb, resize it with both hands, and hear short wooden knocks on impacts, with localised soft-belly wobble while moving.</div>
     <div id="toolbar"><span id="vr-slot"></span><span id="ar-slot"></span><button id="reset" type="button">Reset scene</button></div>
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
+<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. The abdomen wobbles when you move it and settles back to its exact original shape. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -442,6 +442,164 @@ const grabbableCubes = [starterCube];
 const noraLoader = new GLTFLoader();
 let noraTemplate = null;
 let noraModelScale = 1;
+
+// Localised soft-tissue motion for the imported GLB. This is a spring/damper-driven
+// vertex-deformation approximation inspired by the separate Potbelly Man experiment.
+// The original vertex positions and normals are kept intact and restored byte-for-byte
+// when the model settles, so its resting geometry and materials remain unchanged.
+const softTissue = {
+  parts: [],
+  offset: new THREE.Vector3(),
+  velocity: new THREE.Vector3(),
+  filteredAcceleration: new THREE.Vector3(),
+  previousPosition: new THREE.Vector3(),
+  previousQuaternion: new THREE.Quaternion(),
+  previousVelocity: new THREE.Vector3(),
+  previousAngularVelocity: new THREE.Vector3(),
+  initialized: false,
+  deformed: false,
+  accumulator: 0,
+  phase: 0,
+  bellyCenterY: 0
+};
+const softTemp = {
+  localPoint: new THREE.Vector3(),
+  rootPoint: new THREE.Vector3(),
+  localNormal: new THREE.Vector3(),
+  rootNormal: new THREE.Vector3(),
+  rootDelta: new THREE.Vector3(),
+  localDelta: new THREE.Vector3(),
+  localAcceleration: new THREE.Vector3(),
+  currentVelocity: new THREE.Vector3(),
+  worldAcceleration: new THREE.Vector3(),
+  angularVelocity: new THREE.Vector3(),
+  angularAcceleration: new THREE.Vector3(),
+  rotationalAcceleration: new THREE.Vector3(),
+  lever: new THREE.Vector3(0, -0.018, 0.035),
+  cross: new THREE.Vector3(),
+  cross2: new THREE.Vector3(),
+  inverseQuaternion: new THREE.Quaternion(),
+  deltaQuaternion: new THREE.Quaternion()
+};
+
+function restoreSoftTissueGeometry() {
+  for (const part of softTissue.parts) {
+    part.positionAttribute.array.set(part.originalPositions);
+    part.normalAttribute.array.set(part.originalNormals);
+    part.positionAttribute.needsUpdate = true;
+    part.normalAttribute.needsUpdate = true;
+  }
+  softTissue.deformed = false;
+}
+
+function resetSoftTissueDynamics(restoreGeometry = true) {
+  softTissue.offset.set(0, 0, 0);
+  softTissue.velocity.set(0, 0, 0);
+  softTissue.filteredAcceleration.set(0, 0, 0);
+  softTissue.previousPosition.copy(boxVisual.position);
+  softTissue.previousQuaternion.copy(boxVisual.quaternion);
+  softTissue.previousVelocity.set(0, 0, 0);
+  softTissue.previousAngularVelocity.set(0, 0, 0);
+  softTissue.accumulator = 0;
+  softTissue.phase = 0;
+  softTissue.initialized = true;
+  if (restoreGeometry && softTissue.deformed) restoreSoftTissueGeometry();
+}
+
+function prepareSoftTissueDeformation(clone) {
+  softTissue.parts = [];
+  softTissue.deformed = false;
+  softTissue.initialized = false;
+  clone.updateMatrixWorld(true);
+  const inverseCloneWorld = clone.matrixWorld.clone().invert();
+  const rootBounds = new THREE.Box3();
+  const entries = [];
+
+  // Clone each buffer geometry before editing, because GLTFLoader geometry can be shared
+  // by the source template. Use clone-root coordinates so nested mesh transforms are handled.
+  clone.traverse(node => {
+    if (!node.isMesh || !node.geometry || !node.geometry.attributes.position) return;
+    node.geometry = node.geometry.clone();
+    const geometry = node.geometry;
+    if (!geometry.attributes.normal) geometry.computeVertexNormals();
+    const positionAttribute = geometry.attributes.position;
+    const normalAttribute = geometry.attributes.normal;
+    const originalPositions = new Float32Array(positionAttribute.array);
+    const originalNormals = new Float32Array(normalAttribute.array);
+    const rootPositions = new Float32Array(positionAttribute.count * 3);
+    const rootNormals = new Float32Array(positionAttribute.count * 3);
+
+    node.updateMatrixWorld(true);
+    const meshToRoot = inverseCloneWorld.clone().multiply(node.matrixWorld);
+    const inverseMeshToRoot = meshToRoot.clone().invert();
+    const inverseLinear = new THREE.Matrix3().setFromMatrix4(inverseMeshToRoot);
+    const normalToRoot = new THREE.Matrix3().getNormalMatrix(meshToRoot);
+
+    for (let i = 0; i < positionAttribute.count; i++) {
+      const k = i * 3;
+      softTemp.localPoint.set(originalPositions[k], originalPositions[k + 1], originalPositions[k + 2]);
+      softTemp.rootPoint.copy(softTemp.localPoint).applyMatrix4(meshToRoot);
+      rootPositions[k] = softTemp.rootPoint.x;
+      rootPositions[k + 1] = softTemp.rootPoint.y;
+      rootPositions[k + 2] = softTemp.rootPoint.z;
+      rootBounds.expandByPoint(softTemp.rootPoint);
+
+      softTemp.localNormal.set(originalNormals[k], originalNormals[k + 1], originalNormals[k + 2]);
+      softTemp.rootNormal.copy(softTemp.localNormal).applyMatrix3(normalToRoot).normalize();
+      rootNormals[k] = softTemp.rootNormal.x;
+      rootNormals[k + 1] = softTemp.rootNormal.y;
+      rootNormals[k + 2] = softTemp.rootNormal.z;
+    }
+    entries.push({ geometry, positionAttribute, normalAttribute, originalPositions, originalNormals, rootPositions, rootNormals, inverseLinear });
+  });
+
+  if (!entries.length || rootBounds.isEmpty()) {
+    console.warn('No mesh vertex data was available for soft-tissue deformation.');
+    return;
+  }
+
+  const rootSize = rootBounds.getSize(new THREE.Vector3());
+  const rootCenter = rootBounds.getCenter(new THREE.Vector3());
+  const widthHalf = Math.max(rootSize.x * 0.5, 1e-5);
+  const height = Math.max(rootSize.y, 1e-5);
+  const depthHalf = Math.max(rootSize.z * 0.5, 1e-5);
+  softTissue.bellyCenterY = (rootBounds.min.y + height * 0.475 - rootCenter.y) * noraModelScale;
+
+  for (const entry of entries) {
+    const count = entry.positionAttribute.count;
+    const normalizedRootPositions = new Float32Array(count * 3);
+    const weights = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const k = i * 3;
+      const x = (entry.rootPositions[k] - rootCenter.x) * noraModelScale;
+      const y = (entry.rootPositions[k + 1] - rootCenter.y) * noraModelScale;
+      const z = (entry.rootPositions[k + 2] - rootCenter.z) * noraModelScale;
+      normalizedRootPositions[k] = x;
+      normalizedRootPositions[k + 1] = y;
+      normalizedRootPositions[k + 2] = z;
+
+      const yNorm = (entry.rootPositions[k + 1] - rootBounds.min.y) / height;
+      const xNorm = Math.abs((entry.rootPositions[k] - rootCenter.x) / widthHalf);
+      const zNorm = Math.abs((entry.rootPositions[k + 2] - rootCenter.z) / depthHalf);
+      // A tapered abdomen mask: lower/middle torso only, fading at the waist, chest,
+      // sides, and arms/legs. The vertical axis is Y, as specified by glTF.
+      const vertical = THREE.MathUtils.smoothstep(yNorm, 0.34, 0.425) *
+        (1 - THREE.MathUtils.smoothstep(yNorm, 0.515, 0.625));
+      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.14, 0.48);
+      const depthWeight = 0.68 + 0.32 * THREE.MathUtils.smoothstep(zNorm, 0.08, 0.70);
+      weights[i] = vertical * lateral * depthWeight;
+    }
+
+    // Enlarge the frustum sphere by a small amount, so the wobbled vertices are not
+    // clipped when the object approaches the edge of the desktop/VR camera view.
+    if (!entry.geometry.boundingSphere) entry.geometry.computeBoundingSphere();
+    if (entry.geometry.boundingSphere) entry.geometry.boundingSphere.radius += 0.075 / Math.max(noraModelScale, 1e-5);
+
+    softTissue.parts.push({ ...entry, normalizedRootPositions, weights });
+  }
+  console.info(`Soft-tissue mask prepared across ${softTissue.parts.length} GLB mesh(es).`);
+}
+
 function decorateNoraMeshes(root) {
   root.traverse(node => {
     if (!node.isMesh) return;
@@ -464,7 +622,111 @@ function createNoraInstance() {
   holder.scale.setScalar(noraModelScale);
   holder.position.copy(center).multiplyScalar(-noraModelScale);
   holder.updateMatrixWorld(true);
+  prepareSoftTissueDeformation(clone);
   return holder;
+}
+
+function updateSoftTissueDynamics(frameDt) {
+  if (!softTissue.parts.length || frameDt <= 0) return;
+  const dt = Math.min(0.05, Math.max(0.001, frameDt));
+  if (!softTissue.initialized) resetSoftTissueDynamics(false);
+
+  const currentVelocity = softTemp.currentVelocity;
+  currentVelocity.copy(boxVisual.position).sub(softTissue.previousPosition).multiplyScalar(1 / dt).clampLength(0, 7.5);
+  if (currentVelocity.lengthSq() < 0.000625) currentVelocity.set(0, 0, 0); // ignore tiny tracking jitter
+  softTemp.worldAcceleration.copy(currentVelocity).sub(softTissue.previousVelocity).multiplyScalar(1 / dt).clampLength(0, 65);
+  softTemp.inverseQuaternion.copy(boxVisual.quaternion).invert();
+  softTemp.localAcceleration.copy(softTemp.worldAcceleration).applyQuaternion(softTemp.inverseQuaternion);
+
+  softTemp.deltaQuaternion.copy(softTissue.previousQuaternion).invert().multiply(boxVisual.quaternion).normalize();
+  if (softTemp.deltaQuaternion.w < 0) softTemp.deltaQuaternion.set(-softTemp.deltaQuaternion.x, -softTemp.deltaQuaternion.y, -softTemp.deltaQuaternion.z, -softTemp.deltaQuaternion.w);
+  const angle = 2 * Math.acos(THREE.MathUtils.clamp(softTemp.deltaQuaternion.w, -1, 1));
+  if (angle > 1e-5) {
+    const axisLength = Math.sqrt(Math.max(1e-9, 1 - softTemp.deltaQuaternion.w * softTemp.deltaQuaternion.w));
+    softTemp.angularVelocity.set(softTemp.deltaQuaternion.x / axisLength, softTemp.deltaQuaternion.y / axisLength, softTemp.deltaQuaternion.z / axisLength).multiplyScalar(angle / dt).clampLength(0, 24);
+  } else softTemp.angularVelocity.set(0, 0, 0);
+  softTemp.angularAcceleration.copy(softTemp.angularVelocity).sub(softTissue.previousAngularVelocity).multiplyScalar(1 / dt).clampLength(0, 80);
+  // Include the inertial acceleration felt by an abdomen point offset from the root during rotation.
+  softTemp.rotationalAcceleration.copy(softTemp.angularAcceleration).cross(softTemp.lever);
+  softTemp.cross.copy(softTemp.angularVelocity).cross(softTemp.lever);
+  softTemp.cross2.copy(softTemp.angularVelocity).cross(softTemp.cross);
+  softTemp.rotationalAcceleration.add(softTemp.cross2);
+  softTemp.localAcceleration.add(softTemp.rotationalAcceleration).clampLength(0, 65);
+  if (softTemp.localAcceleration.lengthSq() < 0.1225) softTemp.localAcceleration.set(0, 0, 0);
+  const filterAlpha = 1 - Math.exp(-dt * 18);
+  softTissue.filteredAcceleration.lerp(softTemp.localAcceleration, filterAlpha);
+  if (softTissue.filteredAcceleration.lengthSq() < 0.0064) softTissue.filteredAcceleration.set(0, 0, 0);
+
+  softTissue.previousPosition.copy(boxVisual.position);
+  softTissue.previousQuaternion.copy(boxVisual.quaternion);
+  softTissue.previousVelocity.copy(currentVelocity);
+  softTissue.previousAngularVelocity.copy(softTemp.angularVelocity);
+
+  const fixedStep = 1 / 120;
+  softTissue.accumulator += dt;
+  while (softTissue.accumulator >= fixedStep) {
+    // Same spring/damper idea as the Potbelly Man prototype, scaled for this compact GLB.
+    // No constant gravity sag is applied: at rest the model returns to its original shape.
+    const stiffness = 46;
+    const damping = 7.8;
+    const inertia = 0.88;
+    softTissue.velocity.x += (-stiffness * softTissue.offset.x - damping * softTissue.velocity.x - inertia * softTissue.filteredAcceleration.x) * fixedStep;
+    softTissue.velocity.y += (-stiffness * softTissue.offset.y - damping * softTissue.velocity.y - inertia * softTissue.filteredAcceleration.y) * fixedStep;
+    softTissue.velocity.z += (-stiffness * softTissue.offset.z - damping * softTissue.velocity.z - inertia * softTissue.filteredAcceleration.z) * fixedStep;
+    softTissue.velocity.clampLength(0, 0.62);
+    softTissue.offset.addScaledVector(softTissue.velocity, fixedStep);
+    softTissue.offset.x = THREE.MathUtils.clamp(softTissue.offset.x, -0.038, 0.038);
+    softTissue.offset.y = THREE.MathUtils.clamp(softTissue.offset.y, -0.028, 0.028);
+    softTissue.offset.z = THREE.MathUtils.clamp(softTissue.offset.z, -0.045, 0.045);
+    softTissue.phase += fixedStep * (5.0 + Math.min(12, softTissue.velocity.length() * 18));
+    softTissue.accumulator -= fixedStep;
+  }
+
+  if (softTissue.offset.lengthSq() < 1.44e-8 && softTissue.velocity.lengthSq() < 1.6e-7 && softTissue.filteredAcceleration.lengthSq() < 0.0064) {
+    softTissue.offset.set(0, 0, 0);
+    softTissue.velocity.set(0, 0, 0);
+    softTissue.filteredAcceleration.set(0, 0, 0);
+    if (softTissue.deformed) restoreSoftTissueGeometry();
+    return;
+  }
+
+  const bellyVelocity = softTissue.velocity;
+  const acceleration = softTissue.filteredAcceleration;
+  const sx = THREE.MathUtils.clamp(-acceleration.x * 0.0028 + bellyVelocity.x * 0.045, -0.18, 0.18);
+  const sy = THREE.MathUtils.clamp(-acceleration.y * 0.0022 + bellyVelocity.y * 0.035, -0.13, 0.13);
+  const sz = THREE.MathUtils.clamp(-acceleration.z * 0.0028 + bellyVelocity.z * 0.045, -0.18, 0.18);
+  const rippleAmplitude = Math.min(0.010, bellyVelocity.length() * 0.010 + acceleration.length() * 0.00017);
+
+  for (const part of softTissue.parts) {
+    const output = part.positionAttribute.array;
+    const original = part.originalPositions;
+    const base = part.normalizedRootPositions;
+    const normals = part.rootNormals;
+    const weights = part.weights;
+    const count = part.positionAttribute.count;
+    for (let i = 0; i < count; i++) {
+      const k = i * 3;
+      const weight = weights[i];
+      if (weight < 0.0002) {
+        output[k] = original[k]; output[k + 1] = original[k + 1]; output[k + 2] = original[k + 2];
+        continue;
+      }
+      const x = base[k], y = base[k + 1], z = base[k + 2];
+      const wave = Math.sin(softTissue.phase + (y - softTissue.bellyCenterY) * 86 + z * 28 + x * 18) * rippleAmplitude * weight;
+      softTemp.rootDelta.set(
+        softTissue.offset.x * weight + x * sx * weight + normals[k] * wave,
+        softTissue.offset.y * weight + (y - softTissue.bellyCenterY) * sy * weight + normals[k + 1] * wave,
+        softTissue.offset.z * weight + z * sz * weight + normals[k + 2] * wave
+      ).multiplyScalar(1 / Math.max(noraModelScale, 1e-6));
+      softTemp.localDelta.copy(softTemp.rootDelta).applyMatrix3(part.inverseLinear);
+      output[k] = original[k] + softTemp.localDelta.x;
+      output[k + 1] = original[k + 1] + softTemp.localDelta.y;
+      output[k + 2] = original[k + 2] + softTemp.localDelta.z;
+    }
+    part.positionAttribute.needsUpdate = true;
+    part.geometry.computeVertexNormals();
+  }
+  softTissue.deformed = true;
 }
 function replaceFallbackWithNora(visualRoot) {
   if (!noraTemplate) return;
@@ -506,7 +768,8 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
       boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
       syncVisual();
     }
-    setStatus('woman_wearing_swimsuit.glb loaded. Its measured bounds now drive the floor collider.');
+    resetSoftTissueDynamics(false);
+    setStatus('woman_wearing_swimsuit.glb loaded. Localised soft-belly wobble is ready; the original shape is preserved when resting.');
     console.info(`woman_wearing_swimsuit.glb loaded. Model normalized to ${CUBE_SIZE.toFixed(2)} m maximum size.`);
   } catch (error) {
     console.error('Could not prepare woman_wearing_swimsuit.glb:', error);
@@ -1338,6 +1601,7 @@ document.getElementById('reset').addEventListener('click', () => {
   boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.wakeUp();
   syncVisual();
+  resetSoftTissueDynamics(true);
   setStatus('Scene reset. The single 3D model is back at its original size and ready to grab. Use both hands to resize it.');
 });
 
@@ -1472,6 +1736,7 @@ renderer.setAnimationLoop((now, xrFrame) => {
   if (performance.now() - lastContactForceEventAt > CONTACT_EVENT_RELEASE_MS) contactSoundLatched = false;
   enforceFloorSafetyNet();
   syncVisual();
+  updateSoftTissueDynamics(frameDt);
   renderer.render(scene, camera);
 });
 </script>
