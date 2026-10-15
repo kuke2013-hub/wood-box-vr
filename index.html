@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#171b1e">
+<title>Wood Box VR Lab</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #171b1e; color: #f3f0e8; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+  #hud { position: fixed; top: 18px; left: 18px; z-index: 4; width: min(370px, calc(100vw - 36px)); pointer-events: none; }
+  .panel { padding: 16px 17px; border: 1px solid rgba(255,255,255,.13); background: rgba(14,18,20,.78); backdrop-filter: blur(10px); border-radius: 14px; box-shadow: 0 10px 35px rgba(0,0,0,.25); }
+  h1 { font-size: 17px; letter-spacing: .015em; margin: 0 0 8px; font-weight: 650; }
+  #summary { color: #c4c9c7; font-size: 12px; line-height: 1.55; margin-bottom: 12px; }
+  #status { font-size: 12px; line-height: 1.4; color: #e4bd78; margin-top: 9px; min-height: 17px; }
+  #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; pointer-events: auto; }
+  button { border: 1px solid rgba(255,255,255,.2); border-radius: 9px; padding: 9px 12px; color: #f5f2e9; background: #343d3c; cursor: pointer; font-size: 12px; font-weight: 650; }
+  button:hover { background: #46514e; }
+  #reset { background: #765331; }
+  #reset:hover { background: #8b633c; }
+  #hint { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 4; width: max-content; max-width: calc(100vw - 28px); text-align: center; padding: 10px 15px; border-radius: 12px; background: rgba(14,18,20,.78); border: 1px solid rgba(255,255,255,.12); color: #e9e8e0; font-size: 12px; line-height: 1.45; backdrop-filter: blur(10px); pointer-events: none; }
+  #vr-slot { display: inline-flex; }
+  #vr-slot button { position: static !important; margin: 0 !important; width: auto !important; height: auto !important; min-width: 94px; border-radius: 9px !important; font: 650 12px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; padding: 10px 13px !important; color: #17201d !important; background: #d4e7d9 !important; border: 0 !important; }
+  #vr-slot button:disabled { background: #777d78 !important; color: #171b1e !important; }
+  @media (max-width: 560px) { #hud { top: 10px; left: 10px; width: calc(100vw - 20px); } .panel { padding: 12px; } h1 { font-size: 15px; } #hint { bottom: 10px; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud">
+  <div class="panel">
+    <h1>Wood Box VR Lab</h1>
+    <div id="summary">A hollow 50 cm wooden box with a target mass of 1 kg, real-time rigid-body physics and Earth gravity (9.81 m/s²).</div>
+    <div id="toolbar"><span id="vr-slot"></span><button id="reset" type="button">Reset box</button></div>
+    <div id="status">Starting 3D scene…</div>
+  </div>
+</div>
+<div id="hint">Desktop: click and drag the box, then release to throw it. Quest: squeeze the controller grip near the box; release to drop or throw it.</div>
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/rapier.es.js';
+
+const statusEl = document.getElementById('status');
+const stage = document.getElementById('stage');
+const setStatus = (message) => { statusEl.textContent = message; };
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9aacae);
+scene.fog = new THREE.Fog(0x9aacae, 11, 25);
+const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.03, 80);
+const playerRig = new THREE.Group();
+scene.add(playerRig);
+playerRig.position.set(0, 0, 2.65);
+playerRig.add(camera);
+camera.position.set(0, 1.62, 0);
+camera.lookAt(0, 0.30, 1.35);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+stage.appendChild(renderer.domElement);
+const vrButton = VRButton.createButton(renderer, { requiredFeatures: ['local-floor'] });
+vrButton.textContent = 'ENTER VR';
+document.getElementById('vr-slot').appendChild(vrButton);
+
+scene.add(new THREE.HemisphereLight(0xe0eaff, 0x5a3b25, 1.9));
+const keyLight = new THREE.DirectionalLight(0xffe0b3, 3.1);
+keyLight.position.set(-3.4, 5.8, 3.5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1536, 1536);
+keyLight.shadow.camera.left = -6; keyLight.shadow.camera.right = 6;
+keyLight.shadow.camera.top = 7; keyLight.shadow.camera.bottom = -6;
+keyLight.shadow.bias = -0.00025;
+scene.add(keyLight);
+const fillLight = new THREE.PointLight(0xa8c7ff, 25, 13, 2);
+fillLight.position.set(2.8, 2.4, -1.3);
+scene.add(fillLight);
+
+function canvasTexture(width, height, painter, repeatX = 1, repeatY = 1) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  painter(ctx, width, height);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeatX, repeatY);
+  texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
+  return texture;
+}
+
+let seed = 19831;
+function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+const woodTexture = canvasTexture(768, 512, (ctx, w, h) => {
+  const palette = ['#987046','#a77a4b','#8b633e','#b08452','#956b42','#aa7b49'];
+  ctx.fillStyle = '#795431'; ctx.fillRect(0,0,w,h);
+  const plankH = 128;
+  for (let y=0; y<h; y+=plankH) {
+    ctx.fillStyle = palette[Math.floor(rand()*palette.length)]; ctx.fillRect(0,y,w,plankH-3);
+    ctx.fillStyle = 'rgba(44,25,12,.38)'; ctx.fillRect(0,y+plankH-3,w,3);
+    for (let i=0;i<130;i++) {
+      const yy = y + rand()*(plankH-5), x = rand()*w, span = 20+rand()*300;
+      ctx.strokeStyle = rand()>.5 ? 'rgba(49,29,17,.16)' : 'rgba(239,194,128,.15)';
+      ctx.lineWidth = .5+rand()*1.6; ctx.beginPath(); ctx.moveTo(x,yy);
+      ctx.bezierCurveTo(x+span*.3, yy-4+rand()*8, x+span*.65, yy-5+rand()*10, Math.min(w,x+span), yy+rand()*3); ctx.stroke();
+    }
+    for (let x=160+rand()*170; x<w; x+=260+rand()*180) {
+      ctx.strokeStyle='rgba(43,25,13,.2)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x,y+4); ctx.lineTo(x,y+plankH-6); ctx.stroke();
+      ctx.strokeStyle='rgba(242,193,123,.2)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x+3,y+4); ctx.lineTo(x+3,y+plankH-6); ctx.stroke();
+    }
+  }
+}, 1, 1);
+woodTexture.needsUpdate = true;
+const floorTexture = woodTexture.clone(); floorTexture.needsUpdate = true; floorTexture.repeat.set(4, 5);
+const wallTexture = canvasTexture(256, 256, (ctx,w,h) => {
+  ctx.fillStyle = '#b5b2a5'; ctx.fillRect(0,0,w,h);
+  for(let i=0;i<15000;i++) { const a=rand()*.08; ctx.fillStyle=rand()>.5?`rgba(255,246,222,${a})`:`rgba(55,54,47,${a})`; ctx.fillRect(rand()*w,rand()*h,1+rand()*2,1+rand()*2); }
+}, 2, 1);
+const floorMat = new THREE.MeshStandardMaterial({ map: floorTexture, roughness: .78, metalness: 0.0 });
+const plasterMat = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0xe0ddd0, roughness: .96 });
+const trimMat = new THREE.MeshStandardMaterial({ map: woodTexture, color: 0x8e6844, roughness: .72 });
+
+// Room: wood plank floor, plaster walls and low wooden skirting boards.
+const floor = new THREE.Mesh(new THREE.BoxGeometry(8, .1, 10), floorMat);
+floor.position.set(0, -.05, -.5); floor.receiveShadow = true; scene.add(floor);
+const walls = new THREE.Group(); scene.add(walls);
+function addWall(w,h,d,x,y,z) { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), plasterMat); m.position.set(x,y,z); m.receiveShadow=true; m.castShadow=false; walls.add(m); return m; }
+addWall(.1, 3.25, 10, -4, 1.575, -.5);
+addWall(.1, 3.25, 10,  4, 1.575, -.5);
+addWall(8, 3.25, .1, 0, 1.575, -5.5);
+function addTrim(w,h,d,x,y,z) { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), trimMat); m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; scene.add(m); }
+addTrim(.1,.12,9.9,-3.91,.06,-.5); addTrim(.1,.12,9.9,3.91,.06,-.5); addTrim(7.9,.12,.1,0,.06,-5.41);
+
+await RAPIER.init();
+const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+world.timestep = 1 / 60;
+const fixedBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+world.createCollider(RAPIER.ColliderDesc.cuboid(4, .05, 5).setTranslation(0, -.05, -.5).setFriction(.82).setRestitution(.06), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 5).setTranslation(-3.95, 1.575, -.5).setFriction(.7).setRestitution(.05), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 5).setTranslation( 3.95, 1.575, -.5).setFriction(.7).setRestitution(.05), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0, 1.575, -5.45).setFriction(.7).setRestitution(.05), fixedBody);
+
+// Hollow, open-top 50 cm crate. Five visible wooden panels share one 1 kg rigid body.
+const BOX = .5, T = .012, WALL_H = .488, WALL_CY = .006;
+const boxVisual = new THREE.Group(); scene.add(boxVisual);
+const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: .82, metalness: 0.0 });
+const darkWood = new THREE.MeshStandardMaterial({ color: 0x67472b, roughness: .95 });
+function panel(w,h,d,x,y,z, material=boxMat) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), material);
+  mesh.position.set(x,y,z); mesh.castShadow=true; mesh.receiveShadow=true; boxVisual.add(mesh); return mesh;
+}
+// Base; two side walls; front and rear walls. Interior remains visibly hollow.
+panel(BOX-2*T, T, BOX-2*T, 0, -.244, 0);
+panel(T, WALL_H, BOX, -BOX/2+T/2, WALL_CY, 0);
+panel(T, WALL_H, BOX,  BOX/2-T/2, WALL_CY, 0);
+panel(BOX-2*T, WALL_H, T, 0, WALL_CY, -BOX/2+T/2);
+panel(BOX-2*T, WALL_H, T, 0, WALL_CY,  BOX/2-T/2);
+// Dark seams and top edges add a little visual thickness/detail, without changing the rigid body.
+for (const x of [-BOX/2+T/2, BOX/2-T/2]) {
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(T*1.05, .006, BOX), darkWood); edge.position.set(x, BOX/2-.003, 0); edge.castShadow=true; boxVisual.add(edge);
+}
+for (const z of [-BOX/2+T/2, BOX/2-T/2]) {
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(BOX-2*T, .006, T*1.05), darkWood); edge.position.set(0, BOX/2-.003, z); edge.castShadow=true; boxVisual.add(edge);
+}
+const initial = { x: 0, y: .30, z: 1.10 };
+let boxBody;
+function createBoxBody() {
+  if (boxBody) world.removeRigidBody(boxBody);
+  const desc = RAPIER.RigidBodyDesc.dynamic().setTranslation(initial.x, initial.y, initial.z).setLinearDamping(.04).setAngularDamping(.08).setCanSleep(true).setCcdEnabled(true);
+  boxBody = world.createRigidBody(desc);
+  // Set collider density so the combined five-panel crate has total mass = 1.00 kg.
+  const volumes = [
+    (BOX-2*T)*T*(BOX-2*T),
+    T*WALL_H*BOX, T*WALL_H*BOX,
+    (BOX-2*T)*WALL_H*T, (BOX-2*T)*WALL_H*T
+  ];
+  const density = 1 / volumes.reduce((a,b)=>a+b,0);
+  const parts = [
+    { hx:(BOX-2*T)/2, hy:T/2, hz:(BOX-2*T)/2, x:0, y:-.244, z:0 },
+    { hx:T/2, hy:WALL_H/2, hz:BOX/2, x:-BOX/2+T/2, y:WALL_CY, z:0 },
+    { hx:T/2, hy:WALL_H/2, hz:BOX/2, x: BOX/2-T/2, y:WALL_CY, z:0 },
+    { hx:(BOX-2*T)/2, hy:WALL_H/2, hz:T/2, x:0, y:WALL_CY, z:-BOX/2+T/2 },
+    { hx:(BOX-2*T)/2, hy:WALL_H/2, hz:T/2, x:0, y:WALL_CY, z: BOX/2-T/2 }
+  ];
+  for (const p of parts) {
+    const cd = RAPIER.ColliderDesc.cuboid(p.hx,p.hy,p.hz).setTranslation(p.x,p.y,p.z).setDensity(density).setFriction(.68).setRestitution(.11);
+    world.createCollider(cd, boxBody);
+  }
+  // Mass is the physics mass of the five panel colliders; keep a readable status for debugging.
+  boxVisual.position.set(initial.x, initial.y, initial.z);
+  boxVisual.quaternion.identity();
+}
+createBoxBody();
+
+// Controllers and visible hand/controller models.
+const controllerFactory = new XRControllerModelFactory();
+const controllerStates = [];
+const tempPos = new THREE.Vector3();
+const tempQuat = new THREE.Quaternion();
+for (let i=0; i<2; i++) {
+  const controller = renderer.xr.getController(i);
+  const grip = renderer.xr.getControllerGrip(i);
+  scene.add(controller); scene.add(grip);
+  grip.add(controllerFactory.createControllerModel(grip));
+  const rayGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
+  const ray = new THREE.Line(rayGeom, new THREE.LineBasicMaterial({ color: i===0 ? 0x91e2c2 : 0xe6c17d, transparent:true, opacity:.55 }));
+  ray.scale.z = 2.5; controller.add(ray);
+  const state = { controller, grip, holding: false, offsetPos: new THREE.Vector3(), offsetQuat: new THREE.Quaternion(), lastPos: new THREE.Vector3(), lastQuat: new THREE.Quaternion(), linearVelocity: new THREE.Vector3(), angularVelocity: new THREE.Vector3(), lastTime: 0 };
+  controller.addEventListener('squeezestart', () => beginXRGrab(state));
+  controller.addEventListener('squeezeend', () => endXRGrab(state));
+  // Trigger also works as an easy alternative if the user prefers it to the grip button.
+  controller.addEventListener('selectstart', () => { if (!state.holding) beginXRGrab(state); });
+  controller.addEventListener('selectend', () => { if (state.holding) endXRGrab(state); });
+  controllerStates.push(state);
+}
+function getWorldPose(obj, pos, quat) { obj.updateWorldMatrix(true,false); obj.getWorldPosition(pos); obj.getWorldQuaternion(quat); }
+function beginXRGrab(state) {
+  if (state.holding || mouseGrab.active || !boxBody) return;
+  getWorldPose(state.grip, tempPos, tempQuat);
+  const boxPos = boxVisual.position;
+  if (tempPos.distanceTo(boxPos) > 1.25) { setStatus('Move a controller closer to the box, then squeeze or press trigger.'); return; }
+  state.holding = true; heldBy = state;
+  const inverse = tempQuat.clone().invert();
+  state.offsetPos.copy(boxPos).sub(tempPos).applyQuaternion(inverse);
+  state.offsetQuat.copy(inverse).multiply(boxVisual.quaternion);
+  state.lastPos.copy(boxPos); state.lastQuat.copy(boxVisual.quaternion); state.lastTime = performance.now();
+  state.linearVelocity.set(0,0,0); state.angularVelocity.set(0,0,0);
+  boxBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+  boxBody.setLinvel({x:0,y:0,z:0}, true); boxBody.setAngvel({x:0,y:0,z:0}, true);
+  setStatus('Box grabbed. Move your hand; release grip or trigger to drop/throw.');
+}
+function endXRGrab(state) {
+  if (!state.holding) return;
+  state.holding = false; if (heldBy === state) heldBy = null;
+  boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+  const v = state.linearVelocity.clone().clampLength(0, 7.0);
+  const w = state.angularVelocity.clone().clampLength(0, 10.0);
+  boxBody.setLinvel({x:v.x,y:v.y,z:v.z}, true);
+  boxBody.setAngvel({x:w.x,y:w.y,z:w.z}, true);
+  boxBody.wakeUp(); setStatus('Released. Gravity and collisions are active.');
+}
+let heldBy = null;
+
+// Desktop fallback: drag the box with the mouse and release to give it throw velocity.
+const raycaster = new THREE.Raycaster();
+const mouseNdc = new THREE.Vector2();
+const dragPlane = new THREE.Plane();
+const planePoint = new THREE.Vector3();
+const planeNormal = new THREE.Vector3();
+const hitPoint = new THREE.Vector3();
+const dragOffset = new THREE.Vector3();
+const mouseGrab = { active:false, lastPos:new THREE.Vector3(), velocity:new THREE.Vector3(), lastTime:0 };
+function updateRay(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  mouseNdc.x = ((e.clientX-r.left)/r.width)*2-1;
+  mouseNdc.y = -((e.clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(mouseNdc,camera);
+}
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (renderer.xr.isPresenting || heldBy) return;
+  updateRay(e);
+  const hits = raycaster.intersectObjects(boxVisual.children, false);
+  if (!hits.length) return;
+  e.preventDefault();
+  mouseGrab.active = true; renderer.domElement.setPointerCapture?.(e.pointerId);
+  planeNormal.copy(camera.getWorldDirection(new THREE.Vector3())).normalize();
+  planePoint.copy(boxVisual.position); dragPlane.setFromNormalAndCoplanarPoint(planeNormal,planePoint);
+  dragOffset.copy(boxVisual.position).sub(hits[0].point);
+  mouseGrab.lastPos.copy(boxVisual.position); mouseGrab.velocity.set(0,0,0); mouseGrab.lastTime=performance.now();
+  boxBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased,true);
+  boxBody.setLinvel({x:0,y:0,z:0},true); boxBody.setAngvel({x:0,y:0,z:0},true);
+  setStatus('Dragging box. Release the mouse to drop or throw it.');
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!mouseGrab.active) return;
+  updateRay(e);
+  if (!raycaster.ray.intersectPlane(dragPlane,hitPoint)) return;
+  const next = hitPoint.clone().add(dragOffset);
+  const now = performance.now(), dt=Math.max(.008,(now-mouseGrab.lastTime)/1000);
+  mouseGrab.velocity.copy(next).sub(mouseGrab.lastPos).multiplyScalar(1/dt).clampLength(0,7);
+  mouseGrab.lastPos.copy(next); mouseGrab.lastTime=now;
+  boxBody.setNextKinematicTranslation({x:next.x,y:next.y,z:next.z});
+});
+function endMouseGrab() {
+  if (!mouseGrab.active) return;
+  mouseGrab.active=false;
+  boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic,true);
+  const v=mouseGrab.velocity.clone().clampLength(0,7);
+  boxBody.setLinvel({x:v.x,y:v.y,z:v.z},true); boxBody.wakeUp();
+  setStatus('Released. Gravity and collisions are active.');
+}
+window.addEventListener('pointerup',endMouseGrab);
+window.addEventListener('pointercancel',endMouseGrab);
+
+function syncVisual() {
+  const p=boxBody.translation(), q=boxBody.rotation();
+  boxVisual.position.set(p.x,p.y,p.z); boxVisual.quaternion.set(q.x,q.y,q.z,q.w);
+}
+function updateHeldBox(now) {
+  const s=heldBy;
+  if (!s || !s.holding) return;
+  getWorldPose(s.grip,tempPos,tempQuat);
+  const nextPos=s.offsetPos.clone().applyQuaternion(tempQuat).add(tempPos);
+  const nextQuat=tempQuat.clone().multiply(s.offsetQuat);
+  const dt=Math.max(.008,Math.min(.05,(now-s.lastTime)/1000));
+  s.linearVelocity.copy(nextPos).sub(s.lastPos).multiplyScalar(1/dt);
+  // Estimate angular velocity from the change in controller orientation.
+  const dq=nextQuat.clone().multiply(s.lastQuat.clone().invert());
+  const angle=2*Math.acos(THREE.MathUtils.clamp(dq.w,-1,1));
+  const denom=Math.sqrt(Math.max(1e-8,1-dq.w*dq.w));
+  if (denom>1e-4 && angle<Math.PI) s.angularVelocity.set(dq.x/denom,dq.y/denom,dq.z/denom).multiplyScalar(angle/dt);
+  else s.angularVelocity.set(0,0,0);
+  s.lastPos.copy(nextPos); s.lastQuat.copy(nextQuat); s.lastTime=now;
+  boxBody.setNextKinematicTranslation({x:nextPos.x,y:nextPos.y,z:nextPos.z});
+  boxBody.setNextKinematicRotation({x:nextQuat.x,y:nextQuat.y,z:nextQuat.z,w:nextQuat.w});
+}
+
+document.getElementById('reset').addEventListener('click', () => {
+  if (heldBy) { heldBy.holding=false; heldBy=null; }
+  mouseGrab.active=false;
+  boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic,true);
+  boxBody.setTranslation(initial,true); boxBody.setRotation({x:0,y:0,z:0,w:1},true);
+  boxBody.setLinvel({x:0,y:0,z:0},true); boxBody.setAngvel({x:0,y:0,z:0},true); boxBody.wakeUp();
+  setStatus('Reset. Box mass: 1 kg · gravity: 9.81 m/s².');
+});
+renderer.xr.addEventListener('sessionstart', () => {
+  camera.position.set(0,0,0); camera.rotation.set(0,0,0);
+  setStatus('VR active. Walk up to the box and squeeze or trigger to grab it.');
+});
+renderer.xr.addEventListener('sessionend', () => {
+  camera.position.set(0,1.62,0); camera.lookAt(0,.30,1.35);
+  if (heldBy) endXRGrab(heldBy);
+  setStatus('Desktop preview. Use the mouse to drag and throw the box.');
+});
+window.addEventListener('resize', () => {
+  camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.8));
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+
+let previous=performance.now(), accumulator=0;
+setStatus('Ready. Box mass: 1 kg · gravity: 9.81 m/s².');
+renderer.setAnimationLoop(now => {
+  const frameDt=Math.min(.05,Math.max(0,(now-previous)/1000)); previous=now;
+  if (!mouseGrab.active) updateHeldBox(now);
+  if (mouseGrab.active) {
+    const p=boxBody.translation();
+    // Kinematic targets are consumed by Rapier's next fixed step; orientation stays unchanged for mouse drag.
+  }
+  accumulator += frameDt;
+  const fixedDt=1/60;
+  let steps=0;
+  while(accumulator>=fixedDt && steps<4) { world.timestep=fixedDt; world.step(); accumulator-=fixedDt; steps++; }
+  if (steps===4) accumulator=0;
+  syncVisual();
+  renderer.render(scene,camera);
+});
+</script>
+</body>
+</html>
