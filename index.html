@@ -46,7 +46,7 @@
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: hold the trigger or grip to grab the near cube; with hand tracking, pinch thumb and index finger. Use the LEFT thumbstick to walk relative to where you look. Throw the cube into the 20-cube pyramid. Desktop: click and drag to throw.</div>
+<div id="hint">Quest: hold the trigger or grip to grab the near cube; with hand tracking, pinch thumb and index finger. Use the LEFT thumbstick to walk relative to where you look. After throwing, walk closer to the cube to pick it up again. Desktop: click and drag to throw.</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -309,7 +309,8 @@ const handStates = [];
 const tempPos = new THREE.Vector3();
 const tempQuat = new THREE.Quaternion();
 let heldBy = null;
-const MAX_GRAB_DISTANCE = 1.65;
+// Keep grabbing at a natural arm's reach; use the left stick to approach a cube thrown farther away.
+const MAX_GRAB_DISTANCE = 1.85;
 
 function getWorldPose(obj, pos, quat) {
   obj.updateWorldMatrix(true, false);
@@ -323,7 +324,7 @@ function beginXRGrab(state, inputKind) {
   if (distance > MAX_GRAB_DISTANCE) {
     const now = performance.now();
     if (now - (state.lastRejectStatus || 0) > 1200) {
-      setStatus(`Move closer to the cube to grab it (${distance.toFixed(1)} m away).`);
+      setStatus(`Cube is ${distance.toFixed(1)} m away. Use the LEFT thumbstick to move closer, then grab again.`);
       state.lastRejectStatus = now;
     }
     return false;
@@ -346,17 +347,22 @@ function beginXRGrab(state, inputKind) {
   return true;
 }
 function endXRGrab(state) {
-  if (!state.holding) return;
+  // Be idempotent: release events can arrive from both WebXR events and gamepad polling.
+  // Always clear the global lock before returning the cube to dynamic physics.
+  if (!state) return;
+  const wasHolding = state.holding || heldBy === state;
   state.holding = false;
   state.inputKind = null;
   if (heldBy === state) heldBy = null;
+  if (!wasHolding || !boxBody) return;
+
   boxBody.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
   const v = state.linearVelocity.clone().clampLength(0, 7.0);
   const w = state.angularVelocity.clone().clampLength(0, 10.0);
   boxBody.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
   boxBody.setAngvel({ x: w.x, y: w.y, z: w.z }, true);
   boxBody.wakeUp();
-  setStatus('Released. Gravity, collisions and bounce are active.');
+  setStatus('Cube released. Move closer with the left thumbstick if you throw it out of reach.');
 }
 function makeState(poseObject, kind) {
   return {
@@ -475,7 +481,8 @@ function updateControllerGrabPolling(now) {
       source = sources.find(s => s.handedness === state.handedness && s.gamepad && !s.hand);
     }
     if (!source || source.hand || !source.gamepad) {
-      if (state.holding && state.inputKind === 'poll') endXRGrab(state);
+      // A disappearing input source must never leave the cube locked in a held state.
+      if (state.holding || heldBy === state) endXRGrab(state);
       state.lastButtonDown = false;
       continue;
     }
@@ -486,11 +493,14 @@ function updateControllerGrabPolling(now) {
       (trigger && (trigger.pressed || trigger.value > 0.58)) ||
       (squeeze && (squeeze.pressed || squeeze.value > 0.58))
     );
-    if (down && !state.holding && !heldBy && now - state.lastAttempt > 180) {
+
+    // Important fix: polling now releases grabs started by select/squeeze events too,
+    // not just grabs that began through polling. This covers missed WebXR end events.
+    if (state.holding && !down && ['select', 'squeeze', 'poll'].includes(state.inputKind)) {
+      endXRGrab(state);
+    } else if (down && !state.holding && !heldBy && now - state.lastAttempt > 180) {
       state.lastAttempt = now;
       beginXRGrab(state, 'poll');
-    } else if (!down && state.holding && state.inputKind === 'poll') {
-      endXRGrab(state);
     }
     state.lastButtonDown = down;
   }
