@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#171b1e">
-<title>Wood Box VR Lab</title>
+<title>Wood Cube VR — Domino Lab</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -40,13 +40,13 @@
 <div id="stage"></div>
 <div id="hud">
   <div class="panel">
-    <h1>Wood Box VR Lab</h1>
-    <div id="summary">A hollow 50 cm wooden box with a target mass of 1 kg, real-time rigid-body physics and Earth gravity (9.81 m/s²).</div>
-    <div id="toolbar"><span id="vr-slot"></span><button id="reset" type="button">Reset box</button></div>
+    <h1>Wood Cube VR · Domino Lab</h1>
+    <div id="summary">Grab the solid 34 cm wooden cube in front of you and throw it into a line of 20 matching cubes farther away. The cubes topple in a domino-like chain and bounce on impact.</div>
+    <div id="toolbar"><span id="vr-slot"></span><button id="reset" type="button">Reset scene</button></div>
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: pinch your thumb and index finger to grab and release, or use the controller grip/trigger. Desktop: click and drag the box, then release to throw it.</div>
+<div id="hint">Quest: pinch thumb and index finger, or use controller grip/trigger, to grab the near cube. Throw it forward into the distant line. Desktop: click and drag the near cube, then release to throw.</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -60,7 +60,7 @@ const setStatus = (message) => { statusEl.textContent = message; };
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9aacae);
-scene.fog = new THREE.Fog(0x9aacae, 11, 25);
+scene.fog = new THREE.Fog(0x9aacae, 13, 30);
 
 // Desktop camera sits behind the box. During VR, WebXR supplies the headset pose.
 const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.03, 80);
@@ -169,8 +169,8 @@ const plasterMat = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0xe
 const trimMat = new THREE.MeshStandardMaterial({ map: woodTexture, color: 0x8e6844, roughness: .72 });
 
 // Room dimensions are in metres. The front stays open for easy access to the box.
-const floor = new THREE.Mesh(new THREE.BoxGeometry(8, .1, 10), floorMat);
-floor.position.set(0, -.05, -.5);
+const floor = new THREE.Mesh(new THREE.BoxGeometry(8, .1, 15), floorMat);
+floor.position.set(0, -.05, -3.0);
 floor.receiveShadow = true;
 scene.add(floor);
 const walls = new THREE.Group();
@@ -179,80 +179,107 @@ function addWall(w, h, d, x, y, z) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), plasterMat);
   m.position.set(x, y, z); m.receiveShadow = true; walls.add(m); return m;
 }
-addWall(.1, 3.25, 10, -4, 1.575, -.5);
-addWall(.1, 3.25, 10, 4, 1.575, -.5);
-addWall(8, 3.25, .1, 0, 1.575, -5.5);
+addWall(.1, 3.25, 15, -4, 1.575, -3.0);
+addWall(.1, 3.25, 15, 4, 1.575, -3.0);
+addWall(8, 3.25, .1, 0, 1.575, -10.5);
 function addTrim(w, h, d, x, y, z) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), trimMat);
   m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; scene.add(m);
 }
-addTrim(.1, .12, 9.9, -3.91, .06, -.5);
-addTrim(.1, .12, 9.9, 3.91, .06, -.5);
-addTrim(7.9, .12, .1, 0, .06, -5.41);
+addTrim(.1, .12, 14.9, -3.91, .06, -3.0);
+addTrim(.1, .12, 14.9, 3.91, .06, -3.0);
+addTrim(7.9, .12, .1, 0, .06, -10.41);
 
 await RAPIER.init();
 const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 world.timestep = 1 / 60;
 const fixedBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-world.createCollider(RAPIER.ColliderDesc.cuboid(4, .05, 5).setTranslation(0, -.05, -.5).setFriction(.82).setRestitution(.06), fixedBody);
-world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 5).setTranslation(-3.95, 1.575, -.5).setFriction(.7).setRestitution(.05), fixedBody);
-world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 5).setTranslation(3.95, 1.575, -.5).setFriction(.7).setRestitution(.05), fixedBody);
-world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0, 1.575, -5.45).setFriction(.7).setRestitution(.05), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(4, .05, 7.5).setTranslation(0, -.05, -3.0).setFriction(.82).setRestitution(.65), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(-3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(.05, 1.625, 7.5).setTranslation(3.95, 1.575, -3.0).setFriction(.7).setRestitution(.42), fixedBody);
+world.createCollider(RAPIER.ColliderDesc.cuboid(4, 1.625, .05).setTranslation(0, 1.575, -10.45).setFriction(.7).setRestitution(.42), fixedBody);
 
-// Hollow, open-top 50 cm wooden crate. The combined rigid body is targeted at 1 kg.
-const BOX = .5, T = .012, WALL_H = .488, WALL_CY = .006;
+// Solid wooden cubes: one movable 1 kg cube near the player and 20 matching domino cubes farther away.
+const CUBE_SIZE = 0.34;
+const HALF_CUBE = CUBE_SIZE / 2;
+const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.78 });
+const cubeGeometry = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
+
 const boxVisual = new THREE.Group();
+const mainCubeMesh = new THREE.Mesh(cubeGeometry, boxMat);
+mainCubeMesh.castShadow = true;
+mainCubeMesh.receiveShadow = true;
+boxVisual.add(mainCubeMesh);
 scene.add(boxVisual);
-const boxMat = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: .82 });
-const darkWood = new THREE.MeshStandardMaterial({ color: 0x67472b, roughness: .95 });
-function panel(w, h, d, x, y, z, material = boxMat) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
-  mesh.position.set(x, y, z); mesh.castShadow = true; mesh.receiveShadow = true; boxVisual.add(mesh); return mesh;
-}
-panel(BOX - 2 * T, T, BOX - 2 * T, 0, -.244, 0);
-panel(T, WALL_H, BOX, -BOX / 2 + T / 2, WALL_CY, 0);
-panel(T, WALL_H, BOX, BOX / 2 - T / 2, WALL_CY, 0);
-panel(BOX - 2 * T, WALL_H, T, 0, WALL_CY, -BOX / 2 + T / 2);
-panel(BOX - 2 * T, WALL_H, T, 0, WALL_CY, BOX / 2 - T / 2);
-for (const x of [-BOX / 2 + T / 2, BOX / 2 - T / 2]) {
-  const edge = new THREE.Mesh(new THREE.BoxGeometry(T * 1.05, .006, BOX), darkWood);
-  edge.position.set(x, BOX / 2 - .003, 0); edge.castShadow = true; boxVisual.add(edge);
-}
-for (const z of [-BOX / 2 + T / 2, BOX / 2 - T / 2]) {
-  const edge = new THREE.Mesh(new THREE.BoxGeometry(BOX - 2 * T, .006, T * 1.05), darkWood);
-  edge.position.set(0, BOX / 2 - .003, z); edge.castShadow = true; boxVisual.add(edge);
-}
-// Negative Z is straight ahead in WebXR. At 0.85 m, the box is within natural arm reach.
-const initial = { x: 0, y: .30, z: -.85 };
+
+// The near cube starts within a natural reaching distance in front of the player.
+const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.90 };
 let boxBody;
+const dominoCubes = [];
+const DOMINO_COUNT = 20;
+const DOMINO_START_Z = -3.0;
+const DOMINO_SPACING = CUBE_SIZE + 0.015;
+
+function createDynamicCubeBody(position) {
+  const desc = RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(position.x, position.y, position.z)
+    .setLinearDamping(0.025)
+    .setAngularDamping(0.045)
+    .setCanSleep(true)
+    .setCcdEnabled(true);
+  const body = world.createRigidBody(desc);
+  const collider = RAPIER.ColliderDesc.cuboid(HALF_CUBE, HALF_CUBE, HALF_CUBE)
+    .setMass(1.0)
+    .setFriction(0.68)
+    .setRestitution(0.68)
+    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max);
+  world.createCollider(collider, body);
+  return body;
+}
+
 function createBoxBody() {
   if (boxBody) world.removeRigidBody(boxBody);
-  const desc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(initial.x, initial.y, initial.z)
-    .setLinearDamping(.04).setAngularDamping(.08).setCanSleep(true).setCcdEnabled(true);
-  boxBody = world.createRigidBody(desc);
-  const volumes = [
-    (BOX - 2 * T) * T * (BOX - 2 * T),
-    T * WALL_H * BOX, T * WALL_H * BOX,
-    (BOX - 2 * T) * WALL_H * T, (BOX - 2 * T) * WALL_H * T
-  ];
-  const density = 1 / volumes.reduce((a, b) => a + b, 0);
-  const parts = [
-    { hx: (BOX - 2 * T) / 2, hy: T / 2, hz: (BOX - 2 * T) / 2, x: 0, y: -.244, z: 0 },
-    { hx: T / 2, hy: WALL_H / 2, hz: BOX / 2, x: -BOX / 2 + T / 2, y: WALL_CY, z: 0 },
-    { hx: T / 2, hy: WALL_H / 2, hz: BOX / 2, x: BOX / 2 - T / 2, y: WALL_CY, z: 0 },
-    { hx: (BOX - 2 * T) / 2, hy: WALL_H / 2, hz: T / 2, x: 0, y: WALL_CY, z: -BOX / 2 + T / 2 },
-    { hx: (BOX - 2 * T) / 2, hy: WALL_H / 2, hz: T / 2, x: 0, y: WALL_CY, z: BOX / 2 - T / 2 }
-  ];
-  for (const p of parts) {
-    const cd = RAPIER.ColliderDesc.cuboid(p.hx, p.hy, p.hz)
-      .setTranslation(p.x, p.y, p.z).setDensity(density).setFriction(.68).setRestitution(.11);
-    world.createCollider(cd, boxBody);
-  }
+  boxBody = createDynamicCubeBody(initial);
   boxVisual.position.set(initial.x, initial.y, initial.z);
   boxVisual.quaternion.identity();
 }
 createBoxBody();
+
+// Build a straight line of 20 solid cubes running away from the player.
+// A small 1.5 cm gap lets each cube move before it nudges the next one.
+for (let i = 0; i < DOMINO_COUNT; i++) {
+  const position = {
+    x: 0,
+    y: HALF_CUBE + 0.002,
+    z: DOMINO_START_Z - i * DOMINO_SPACING
+  };
+  const visual = new THREE.Mesh(cubeGeometry, boxMat);
+  visual.position.set(position.x, position.y, position.z);
+  visual.castShadow = true;
+  visual.receiveShadow = true;
+  scene.add(visual);
+  const body = createDynamicCubeBody(position);
+  dominoCubes.push({ visual, body, initial: { ...position }, chainTriggered: false });
+}
+
+// A light-touch domino assist helps the chain topple reliably on a Quest's limited frame budget.
+// Collisions and motion remain Rapier rigid-body physics; this impulse adds a small forward tip
+// once a cube has visibly started moving into the next one.
+function updateDominoChain() {
+  for (let i = 0; i < dominoCubes.length - 1; i++) {
+    const current = dominoCubes[i];
+    if (current.chainTriggered) continue;
+    const p = current.body.translation();
+    const v = current.body.linvel();
+    const movedForward = current.initial.z - p.z > CUBE_SIZE * 0.075;
+    if (movedForward && v.z < -0.12) {
+      current.chainTriggered = true;
+      const next = dominoCubes[i + 1].body;
+      next.applyImpulse({ x: 0, y: 0, z: -0.32 }, true);
+      next.applyTorqueImpulse({ x: -0.032, y: 0, z: 0 }, true);
+    }
+  }
+}
 
 // XR input. Controller grips and tracked hands are scene siblings, so both share the same origin as the box.
 const controllerFactory = new XRControllerModelFactory();
@@ -289,7 +316,7 @@ function beginXRGrab(state, inputKind) {
   boxBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
   boxBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  setStatus(state.kind === 'hand' ? 'Pinch held. Move your hand; release the pinch to drop or throw.' : 'Box grabbed. Move your hand; release grip or trigger to drop/throw.');
+  setStatus(state.kind === 'hand' ? 'Pinch held. Move your hand; release to throw the cube.' : 'Cube grabbed. Move your hand; release grip or trigger to throw.');
 }
 function endXRGrab(state) {
   if (!state.holding) return;
@@ -302,7 +329,7 @@ function endXRGrab(state) {
   boxBody.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
   boxBody.setAngvel({ x: w.x, y: w.y, z: w.z }, true);
   boxBody.wakeUp();
-  setStatus('Released. Gravity and collisions are active.');
+  setStatus('Released. Gravity, collisions and bounce are active.');
 }
 function makeState(poseObject, kind) {
   return {
@@ -420,7 +447,7 @@ renderer.domElement.addEventListener('pointerdown', e => {
   boxBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
   boxBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  setStatus('Dragging box. Release the mouse to drop or throw it.');
+  setStatus('Dragging cube. Release the mouse to throw it toward the domino line.');
 });
 renderer.domElement.addEventListener('pointermove', e => {
   if (!mouseGrab.active) return;
@@ -440,7 +467,7 @@ function endMouseGrab() {
   const v = mouseGrab.velocity.clone().clampLength(0, 7);
   boxBody.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
   boxBody.wakeUp();
-  setStatus('Released. Gravity and collisions are active.');
+  setStatus('Released. Gravity, collisions and bounce are active.');
 }
 window.addEventListener('pointerup', endMouseGrab);
 window.addEventListener('pointercancel', endMouseGrab);
@@ -449,6 +476,11 @@ function syncVisual() {
   const p = boxBody.translation(), q = boxBody.rotation();
   boxVisual.position.set(p.x, p.y, p.z);
   boxVisual.quaternion.set(q.x, q.y, q.z, q.w);
+  for (const cube of dominoCubes) {
+    const cp = cube.body.translation(), cq = cube.body.rotation();
+    cube.visual.position.set(cp.x, cp.y, cp.z);
+    cube.visual.quaternion.set(cq.x, cq.y, cq.z, cq.w);
+  }
 }
 function updateHeldBox(now) {
   const state = heldBy;
@@ -479,18 +511,28 @@ document.getElementById('reset').addEventListener('click', () => {
   boxBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
   boxBody.wakeUp();
-  setStatus('Reset. Box mass: 1 kg · gravity: 9.81 m/s².');
+  for (const cube of dominoCubes) {
+    cube.chainTriggered = false;
+    cube.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+    cube.body.setTranslation(cube.initial, true);
+    cube.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    cube.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    cube.body.wakeUp();
+  }
+  syncVisual();
+  setStatus('Scene reset. One solid cube ready; 20 domino cubes ahead. Gravity and bounce are active.');
 });
 
 renderer.xr.addEventListener('sessionstart', () => {
   camera.position.set(0, 0, 0);
   camera.rotation.set(0, 0, 0);
-  setStatus('VR active. Box is in front of you. Pinch with tracked hands or use controller grip/trigger.');
+  setStatus('VR active. Grab the near cube, then throw it forward into the line of 20 cubes.');
 });
 renderer.xr.addEventListener('sessionend', () => {
   setDesktopCamera();
   if (heldBy) endXRGrab(heldBy);
-  setStatus('Desktop preview. Drag the box with the mouse to pick it up and throw it.');
+  setStatus('Desktop preview. Drag the near cube with the mouse, then throw it toward the row.');
 });
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -500,7 +542,7 @@ window.addEventListener('resize', () => {
 });
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Ready. Box mass: 1 kg · gravity: 9.81 m/s².');
+setStatus('Ready. Solid 1 kg cube in reach; 20 domino cubes ahead. Gravity: 9.81 m/s².');
 renderer.setAnimationLoop(now => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
@@ -512,6 +554,7 @@ renderer.setAnimationLoop(now => {
   while (accumulator >= fixedDt && steps < 4) {
     world.timestep = fixedDt;
     world.step();
+    updateDominoChain();
     accumulator -= fixedDt;
     steps++;
   }
