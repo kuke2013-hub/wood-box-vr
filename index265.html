@@ -409,7 +409,7 @@ boxVisual.visible = false; // becomes visible only after woman_wearing_swimsuit.
 scene.add(boxVisual);
 
 // One movable 3D model, placed within easy reach of the player.
-const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.78 };
+const initial = { x: 0, y: HALF_CUBE + 0.002, z: -0.58 }; // 20 cm closer than the previous placement
 let boxBody;
 
 function makeObjectColliderDescriptor(scaleFactor = 1) {
@@ -535,6 +535,27 @@ vrTuningPanel.name = 'In-headset soft chest and physics settings';
 vrTuningPanel.position.set(0.55, 0.95, -0.96);
 vrTuningPanel.renderOrder = 1000;
 vrTuningPanel.visible = false;
+// A visible blue target sits exactly at the controller/hand ray intersection on the panel.
+// It is a child of the panel, so its position is measured in panel-local coordinates.
+const tuningPointerDot = new THREE.Group();
+tuningPointerDot.name = 'Blue tuning-panel pointer';
+tuningPointerDot.visible = false;
+const pointerOuter = new THREE.Mesh(
+  new THREE.CircleGeometry(0.014, 28),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, side: THREE.DoubleSide })
+);
+pointerOuter.position.z = 0;
+pointerOuter.renderOrder = 1002;
+const pointerInner = new THREE.Mesh(
+  new THREE.CircleGeometry(0.009, 28),
+  new THREE.MeshBasicMaterial({ color: 0x168bff, depthTest: false, depthWrite: false, side: THREE.DoubleSide })
+);
+pointerInner.position.z = 0.002;
+pointerInner.renderOrder = 1003;
+tuningPointerDot.add(pointerOuter, pointerInner);
+tuningPointerDot.position.z = 0.009;
+tuningPointerDot.renderOrder = 1002;
+vrTuningPanel.add(tuningPointerDot);
 // Keep the adjustment panel in world space, not parented to the headset camera.
 // It is placed beside the model at the start of each XR session and stays there as
 // the user turns or walks around. The position is corrected if Quest floor detection
@@ -607,7 +628,7 @@ function drawVRTuningPanel() {
     ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(34, row.y + 72); ctx.lineTo(606, row.y + 72); ctx.stroke();
   }
   ctx.fillStyle = '#d5e6d9'; ctx.font = '700 19px Arial'; ctx.textAlign = 'center';
-  ctx.fillText('AIM AT A SLIDER · HOLD TRIGGER AND DRAG', VR_TUNING_W / 2, 1070);
+  ctx.fillText('BLUE DOT SHOWS POINTER · HOLD TRIGGER AND DRAG', VR_TUNING_W / 2, 1070);
   ctx.fillStyle = '#9fb0a5'; ctx.font = '17px Arial';
   ctx.fillText('Tracked hands: pinch a slider and move your hand.', VR_TUNING_W / 2, 1096);
   ctx.textAlign = 'left';
@@ -666,6 +687,44 @@ function tuningUVFromController(state) {
   const uv = hits[0].uv;
   return { u: uv.x, v: uv.y, canvasX: uv.x * VR_TUNING_W, canvasY: (1 - uv.y) * VR_TUNING_H };
 }
+function updateTuningPointer() {
+  if (!vrTuningPanel.visible || !renderer.xr.isPresenting) {
+    tuningPointerDot.visible = false;
+    return;
+  }
+  let targetUV = null;
+  // Prefer the controller currently dragging a slider, then the right controller, then left.
+  const orderedControllers = controllerStates.slice().sort((a, b) => {
+    const activeDiff = Number(Boolean(b.vrTuningActive)) - Number(Boolean(a.vrTuningActive));
+    if (activeDiff) return activeDiff;
+    const rightDiff = Number(b.handedness === 'right') - Number(a.handedness === 'right');
+    return rightDiff;
+  });
+  for (const state of orderedControllers) {
+    const uv = tuningUVFromController(state);
+    if (uv) { targetUV = uv; break; }
+  }
+  // If tracked hands are active, show the same dot at the pinch centre as it touches the panel.
+  if (!targetUV) {
+    for (const state of handStates) {
+      if (!state.anchor) continue;
+      const uv = tuningUVFromWorldPoint(state.anchor.position, 0.22);
+      if (uv) { targetUV = uv; break; }
+    }
+  }
+  if (!targetUV) {
+    tuningPointerDot.visible = false;
+    return;
+  }
+  tuningPointerDot.position.set(
+    (targetUV.u - 0.5) * VR_TUNING_PANEL_WIDTH,
+    (targetUV.v - 0.5) * VR_TUNING_PANEL_HEIGHT,
+    0.009
+  );
+  tuningPointerDot.visible = true;
+  tuningPointerDot.updateMatrixWorld(true);
+}
+
 function tuningRowAtPoint(uv) {
   if (!uv || uv.canvasX < 32 || uv.canvasX > VR_TUNING_W - 32) return null;
   return tuningRows.find(row => uv.canvasY >= row.y - 26 && uv.canvasY <= row.y + 56) || null;
@@ -827,7 +886,9 @@ function prepareSoftTissueDeformation(clone) {
   };
   const positiveEnvelope = percentile(positiveChestDepths, 0.88);
   const negativeEnvelope = percentile(negativeChestDepths, 0.88);
-  softTissue.frontSign = negativeEnvelope > positiveEnvelope * 1.06 ? -1 : 1;
+  // Reverse the prior face choice: that revision drove the wobble on the far/back surface.
+  // Select the opposite Z face and retain both depth and normal masks so the rear stays still.
+  softTissue.frontSign = negativeEnvelope > positiveEnvelope * 1.06 ? 1 : -1;
   softTissue.weightedVertexCount = 0;
 
   for (const entry of entries) {
@@ -2024,7 +2085,7 @@ function processPhysicsContactSounds() {
 }
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Loading woman_wearing_swimsuit.glb. In VR, point at the fixed physics panel beside the model with a controller and hold the trigger to tune chest response, damping, tissue gravity and object gravity.');
+setStatus('Loading woman_wearing_swimsuit.glb. The model starts a little closer. Aim at the fixed tuning panel; a blue dot shows exactly where the controller ray lands. Hold trigger and drag a slider. Chest wobble targets the opposite/front surface from the previous revision.');
 renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
@@ -2033,6 +2094,7 @@ renderer.setAnimationLoop((now, xrFrame) => {
     updateDetectedFloor(xrFrame, now);
     placeVRTuningPanelInWorld(xrFrame, now);
     updateXRLocomotion(frameDt, xrFrame);
+    updateTuningPointer();
     updateVRTuningInteractions();
     updateControllerGrabPolling(now);
     updateHandAnchors();
