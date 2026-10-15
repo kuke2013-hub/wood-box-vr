@@ -13,6 +13,14 @@
   canvas { display: block; width: 100%; height: 100%; outline: none; }
   #hud { position: fixed; top: 18px; left: 18px; z-index: 4; width: min(370px, calc(100vw - 36px)); pointer-events: none; }
   .panel { padding: 16px 17px; border: 1px solid rgba(255,255,255,.13); background: rgba(14,18,20,.78); backdrop-filter: blur(10px); border-radius: 14px; box-shadow: 0 10px 35px rgba(0,0,0,.25); }
+  #desktop-tuning { position: fixed; top: 18px; right: 18px; z-index: 5; width: min(300px, calc(100vw - 36px)); max-height: calc(100vh - 36px); overflow-y: auto; pointer-events: auto; padding: 14px 15px; }
+  #desktop-tuning .tune-title { margin: 0 0 5px; font-size: 13px; font-weight: 750; letter-spacing: .04em; }
+  #desktop-tuning .tune-copy { margin: 0 0 10px; font-size: 10px; line-height: 1.45; color: #c4c9c7; }
+  .tune-row { margin: 10px 0 12px; }
+  .tune-label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 10px; font-weight: 650; }
+  .tune-label output { color: #d6e8d8; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tune-row input[type=range] { width: 100%; margin: 8px 0 0; accent-color: #b3d8bd; cursor: pointer; }
+  #desktop-tuning .tune-note { margin: 9px 0 0; font-size: 9px; color: #aeb8b4; line-height: 1.45; }
   h1 { font-size: 17px; letter-spacing: .015em; margin: 0 0 8px; font-weight: 650; }
   #summary { color: #c4c9c7; font-size: 12px; line-height: 1.55; margin-bottom: 12px; }
   #status { font-size: 12px; line-height: 1.4; color: #e4bd78; margin-top: 9px; min-height: 17px; }
@@ -25,6 +33,7 @@
   #vr-slot, #ar-slot { display: inline-flex; }
   #vr-slot button, #ar-slot button { position: static !important; margin: 0 !important; width: auto !important; height: auto !important; min-width: 94px; border-radius: 9px !important; font: 650 12px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; padding: 10px 13px !important; color: #17201d !important; background: #d4e7d9 !important; border: 0 !important; }
   #vr-slot button:disabled, #ar-slot button:disabled { background: #777d78 !important; color: #171b1e !important; }
+  @media (max-width: 760px) { #desktop-tuning { top: auto; right: 10px; bottom: 62px; width: min(245px, calc(100vw - 20px)); max-height: 43vh; padding: 10px 12px; } #desktop-tuning .tune-row { margin: 7px 0 8px; } #desktop-tuning .tune-copy, #desktop-tuning .tune-note { display: none; } }
   @media (max-width: 560px) { #hud { top: 10px; left: 10px; width: calc(100vw - 20px); } .panel { padding: 12px; } h1 { font-size: 15px; } #hint { bottom: 10px; } }
 </style>
 <script type="importmap">
@@ -41,12 +50,23 @@
 <div id="hud">
   <div class="panel">
     <h1>Single 3D Object VR</h1>
-    <div id="summary">Enter VR or Passthrough. Grab and throw woman_wearing_swimsuit.glb, resize it with both hands, and hear short wooden knocks on impacts, with localised soft-belly wobble while moving.</div>
+    <div id="summary">Enter VR or Passthrough. Grab and throw woman_wearing_swimsuit.glb, resize it with both hands, and hear short wooden knocks on impacts, with localised front-chest wobble while moving.</div>
     <div id="toolbar"><span id="vr-slot"></span><span id="ar-slot"></span><button id="reset" type="button">Reset scene</button></div>
     <div id="status">Starting 3D scene…</div>
   </div>
 </div>
-<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. The abdomen wobbles when you move it and settles back to its exact original shape. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
+<div id="hint">Quest: hold trigger/grip near the 3D model to grab; use BOTH hands and move them apart to resize; release to throw. Pinch with tracked hands. Move with the LEFT thumbstick. Only the front chest deforms while moving; the back stays unchanged and the model returns to its original shape at the default chest-gravity setting. Impacts make a short wooden knock. Desktop: click and drag the model.</div>
+<div id="desktop-tuning" class="panel" aria-label="Soft chest and physics tuning">
+  <div class="tune-title">SOFT CHEST & PHYSICS</div>
+  <p class="tune-copy">These controls are also available on a floating panel inside VR/Passthrough. The chest mask affects only the front surface; the back stays unchanged.</p>
+  <div class="tune-row"><div class="tune-label"><label for="chestResponseInput">Chest response</label><output id="chestResponseValue">1.00×</output></div><input id="chestResponseInput" type="range" min="0" max="2" step="0.05" value="1" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestStiffnessInput">Spring stiffness</label><output id="chestStiffnessValue">46</output></div><input id="chestStiffnessInput" type="range" min="10" max="100" step="1" value="46" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestDampingInput">Damping</label><output id="chestDampingValue">7.8</output></div><input id="chestDampingInput" type="range" min="0.5" max="16" step="0.1" value="7.8" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestInertiaInput">Movement inertia</label><output id="chestInertiaValue">0.88×</output></div><input id="chestInertiaInput" type="range" min="0" max="2" step="0.05" value="0.88" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="chestGravityInput">Chest tissue gravity</label><output id="chestGravityValue">0.00 m/s²</output></div><input id="chestGravityInput" type="range" min="0" max="1.2" step="0.05" value="0" /></div>
+  <div class="tune-row"><div class="tune-label"><label for="worldGravityInput">Object gravity</label><output id="worldGravityValue">9.81 m/s²</output></div><input id="worldGravityInput" type="range" min="0" max="19.62" step="0.1" value="9.81" /></div>
+  <p class="tune-note">At the default chest-gravity setting, the model returns to its original resting geometry. Increasing chest tissue gravity adds a small downward sag. Object gravity affects falling and bouncing.</p>
+</div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
@@ -326,6 +346,15 @@ addTrim(7.9, .12, .1, 0, .06, -10.41);
 await RAPIER.init();
 const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 world.timestep = 1 / 60;
+// Live-tunable settings. The defaults preserve the current motion and Earth-like gravity.
+const physicsTuning = {
+  chestResponse: 1.0,
+  chestStiffness: 46,
+  chestDamping: 7.8,
+  chestInertia: 0.88,
+  chestGravity: 0.0,
+  worldGravity: 9.81
+};
 // Required by Rapier for collision/contact-force event reporting.
 const physicsEventQueue = new RAPIER.EventQueue(true);
 // Keep the room walls and the floor on separate fixed bodies. The Quest floor-registration
@@ -460,7 +489,7 @@ const softTissue = {
   deformed: false,
   accumulator: 0,
   phase: 0,
-  bellyCenterY: 0
+  chestCenterY: 0
 };
 const softTemp = {
   localPoint: new THREE.Vector3(),
@@ -481,6 +510,180 @@ const softTemp = {
   inverseQuaternion: new THREE.Quaternion(),
   deltaQuaternion: new THREE.Quaternion()
 };
+
+// A physical, ray-interactive tuning panel attached to the viewer camera. It is visible
+// inside immersive VR/Passthrough; desktop users get matching HTML range sliders.
+const VR_TUNING_W = 640;
+const VR_TUNING_H = 1120;
+const VR_TUNING_PANEL_WIDTH = 0.43;
+const VR_TUNING_PANEL_HEIGHT = VR_TUNING_PANEL_WIDTH * VR_TUNING_H / VR_TUNING_W;
+const tuningCanvas = document.createElement('canvas');
+tuningCanvas.width = VR_TUNING_W;
+tuningCanvas.height = VR_TUNING_H;
+const tuningContext = tuningCanvas.getContext('2d');
+const tuningTexture = new THREE.CanvasTexture(tuningCanvas);
+tuningTexture.colorSpace = THREE.SRGBColorSpace;
+tuningTexture.minFilter = THREE.LinearFilter;
+tuningTexture.magFilter = THREE.LinearFilter;
+const vrTuningPanel = new THREE.Mesh(
+  new THREE.PlaneGeometry(VR_TUNING_PANEL_WIDTH, VR_TUNING_PANEL_HEIGHT),
+  new THREE.MeshBasicMaterial({ map: tuningTexture, transparent: true, side: THREE.DoubleSide, depthTest: false, depthWrite: false })
+);
+vrTuningPanel.name = 'In-headset soft chest and physics settings';
+vrTuningPanel.position.set(0.34, -0.045, -0.65);
+vrTuningPanel.renderOrder = 1000;
+vrTuningPanel.visible = false;
+camera.add(vrTuningPanel);
+
+const tuningRows = [
+  { id: 'chestResponse', label: 'CHEST RESPONSE', min: 0, max: 2, step: 0.05, y: 160, input: 'chestResponseInput', output: 'chestResponseValue', format: v => `${v.toFixed(2)}×` },
+  { id: 'chestStiffness', label: 'SPRING STIFFNESS', min: 10, max: 100, step: 1, y: 310, input: 'chestStiffnessInput', output: 'chestStiffnessValue', format: v => `${v.toFixed(0)}` },
+  { id: 'chestDamping', label: 'DAMPING', min: 0.5, max: 16, step: 0.1, y: 460, input: 'chestDampingInput', output: 'chestDampingValue', format: v => `${v.toFixed(1)}` },
+  { id: 'chestInertia', label: 'MOVEMENT INERTIA', min: 0, max: 2, step: 0.05, y: 610, input: 'chestInertiaInput', output: 'chestInertiaValue', format: v => `${v.toFixed(2)}×` },
+  { id: 'chestGravity', label: 'CHEST TISSUE GRAVITY', min: 0, max: 1.2, step: 0.05, y: 760, input: 'chestGravityInput', output: 'chestGravityValue', format: v => `${v.toFixed(2)} m/s²` },
+  { id: 'worldGravity', label: 'OBJECT GRAVITY', min: 0, max: 19.62, step: 0.1, y: 910, input: 'worldGravityInput', output: 'worldGravityValue', format: v => `${v.toFixed(1)} m/s²` }
+];
+
+function roundRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + width - r, y); ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r); ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height); ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
+}
+function drawVRTuningPanel() {
+  const ctx = tuningContext;
+  ctx.clearRect(0, 0, VR_TUNING_W, VR_TUNING_H);
+  roundRect(ctx, 8, 8, VR_TUNING_W - 16, VR_TUNING_H - 16, 28);
+  ctx.fillStyle = 'rgba(12,17,19,0.96)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(219,235,225,0.48)'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = '#e6f0e7'; ctx.font = '700 31px Arial'; ctx.fillText('SOFT CHEST & PHYSICS', 36, 58);
+  ctx.fillStyle = '#a9bbb0'; ctx.font = '20px Arial'; ctx.fillText('FRONT CHEST ONLY · BACK PRESERVED', 38, 92);
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(34, 116); ctx.lineTo(606, 116); ctx.stroke();
+  for (const row of tuningRows) {
+    const value = physicsTuning[row.id];
+    const x1 = 54, x2 = 586, trackY = row.y + 32;
+    ctx.fillStyle = '#f2f3ed'; ctx.font = '700 22px Arial'; ctx.textAlign = 'left'; ctx.fillText(row.label, 42, row.y);
+    ctx.fillStyle = '#c9e7d0'; ctx.font = '22px Arial'; ctx.textAlign = 'right'; ctx.fillText(row.format(value), 596, row.y);
+    ctx.textAlign = 'left';
+    roundRect(ctx, x1, trackY - 6, x2 - x1, 12, 6); ctx.fillStyle = '#37433d'; ctx.fill();
+    const ratio = (value - row.min) / (row.max - row.min);
+    roundRect(ctx, x1, trackY - 6, Math.max(12, (x2 - x1) * ratio), 12, 6); ctx.fillStyle = '#a6d7b2'; ctx.fill();
+    ctx.beginPath(); ctx.arc(x1 + (x2 - x1) * ratio, trackY, 16, 0, Math.PI * 2); ctx.fillStyle = '#f4f5ec'; ctx.fill();
+    ctx.fillStyle = '#90a197'; ctx.font = '17px Arial'; ctx.fillText(row.min.toFixed(row.step < 1 ? (row.id === 'worldGravity' ? 1 : 1) : 0), x1, trackY + 34);
+    ctx.textAlign = 'right'; ctx.fillText(row.max.toFixed(row.step < 1 ? 1 : 0), x2, trackY + 34); ctx.textAlign = 'left';
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(34, row.y + 72); ctx.lineTo(606, row.y + 72); ctx.stroke();
+  }
+  ctx.fillStyle = '#d5e6d9'; ctx.font = '700 19px Arial'; ctx.textAlign = 'center';
+  ctx.fillText('AIM AT A SLIDER · HOLD TRIGGER AND DRAG', VR_TUNING_W / 2, 1070);
+  ctx.fillStyle = '#9fb0a5'; ctx.font = '17px Arial';
+  ctx.fillText('Tracked hands: pinch a slider and move your hand.', VR_TUNING_W / 2, 1096);
+  ctx.textAlign = 'left';
+  tuningTexture.needsUpdate = true;
+}
+
+function updateTuningReadouts() {
+  for (const row of tuningRows) {
+    const input = document.getElementById(row.input);
+    const output = document.getElementById(row.output);
+    if (input) input.value = String(physicsTuning[row.id]);
+    if (output) output.textContent = row.format(physicsTuning[row.id]);
+  }
+  drawVRTuningPanel();
+}
+function setTuningParameter(id, rawValue) {
+  const row = tuningRows.find(item => item.id === id);
+  if (!row || !Number.isFinite(Number(rawValue))) return;
+  const steps = Math.round((Number(rawValue) - row.min) / row.step);
+  const value = THREE.MathUtils.clamp(row.min + steps * row.step, row.min, row.max);
+  if (Math.abs(physicsTuning[id] - value) < 1e-6) return;
+  physicsTuning[id] = value;
+  if (id === 'worldGravity') { world.gravity.y = -value; if (boxBody) boxBody.wakeUp(); }
+  updateTuningReadouts();
+}
+for (const row of tuningRows) {
+  const input = document.getElementById(row.input);
+  if (input) input.addEventListener('input', () => setTuningParameter(row.id, Number(input.value)));
+}
+updateTuningReadouts();
+
+const tuningRaycaster = new THREE.Raycaster();
+const tuningRayOrigin = new THREE.Vector3();
+const tuningRayDirection = new THREE.Vector3();
+const tuningRayQuaternion = new THREE.Quaternion();
+function tuningUVFromWorldPoint(worldPoint, tolerance = 0.14) {
+  if (!vrTuningPanel.visible) return null;
+  vrTuningPanel.updateWorldMatrix(true, false);
+  const local = vrTuningPanel.worldToLocal(worldPoint.clone());
+  if (Math.abs(local.z) > tolerance || Math.abs(local.x) > VR_TUNING_PANEL_WIDTH / 2 || Math.abs(local.y) > VR_TUNING_PANEL_HEIGHT / 2) return null;
+  const u = local.x / VR_TUNING_PANEL_WIDTH + 0.5;
+  const v = local.y / VR_TUNING_PANEL_HEIGHT + 0.5;
+  return { u, v, canvasX: u * VR_TUNING_W, canvasY: (1 - v) * VR_TUNING_H };
+}
+function tuningUVFromController(state) {
+  if (!vrTuningPanel.visible || !state || !state.controllerObject) return null;
+  const controller = state.controllerObject;
+  vrTuningPanel.updateWorldMatrix(true, false);
+  controller.updateWorldMatrix(true, false);
+  controller.getWorldPosition(tuningRayOrigin);
+  controller.getWorldQuaternion(tuningRayQuaternion);
+  tuningRayDirection.set(0, 0, -1).applyQuaternion(tuningRayQuaternion).normalize();
+  tuningRaycaster.set(tuningRayOrigin, tuningRayDirection);
+  const hits = tuningRaycaster.intersectObject(vrTuningPanel, false);
+  if (!hits.length || !hits[0].uv) return null;
+  const uv = hits[0].uv;
+  return { u: uv.x, v: uv.y, canvasX: uv.x * VR_TUNING_W, canvasY: (1 - uv.y) * VR_TUNING_H };
+}
+function tuningRowAtPoint(uv) {
+  if (!uv || uv.canvasX < 32 || uv.canvasX > VR_TUNING_W - 32) return null;
+  return tuningRows.find(row => uv.canvasY >= row.y - 26 && uv.canvasY <= row.y + 56) || null;
+}
+function applyTuningUVToState(state, uv) {
+  if (!state || !state.vrTuningSlider || !uv) return;
+  const row = tuningRows.find(item => item.id === state.vrTuningSlider);
+  if (!row) return;
+  const xMin = 54 / VR_TUNING_W, xMax = 586 / VR_TUNING_W;
+  const ratio = THREE.MathUtils.clamp((uv.u - xMin) / (xMax - xMin), 0, 1);
+  setTuningParameter(row.id, row.min + ratio * (row.max - row.min));
+}
+function startVRTuningInteraction(state, uv) {
+  if (!uv) return false;
+  state.vrTuningActive = true;
+  state.vrTuningSlider = null;
+  const row = tuningRowAtPoint(uv);
+  if (row) {
+    state.vrTuningSlider = row.id;
+    applyTuningUVToState(state, uv);
+  }
+  return true; // Any touch on the panel is consumed instead of grabbing the model.
+}
+function endVRTuningInteraction(state) {
+  if (!state || !state.vrTuningActive) return;
+  state.vrTuningActive = false;
+  state.vrTuningSlider = null;
+  state.vrTuningFromHand = false;
+  setStatus('Physics settings updated. Chest motion affects the front chest surface only; object gravity controls falling and bouncing.');
+}
+function updateVRTuningInteractions() {
+  for (const state of controllerStates) {
+    if (!state.vrTuningActive || state.vrTuningFromHand) continue;
+    const uv = tuningUVFromController(state);
+    if (uv) applyTuningUVToState(state, uv);
+  }
+}
+function startHandTuningInteraction(state) {
+  const uv = tuningUVFromWorldPoint(state.anchor.position);
+  if (!uv) return false;
+  if (!startVRTuningInteraction(state, uv)) return false;
+  state.vrTuningFromHand = true;
+  return true;
+}
+function updateHandTuningInteraction(state) {
+  if (!state.vrTuningActive || !state.vrTuningFromHand) return;
+  const uv = tuningUVFromWorldPoint(state.anchor.position, 0.22);
+  if (uv) applyTuningUVToState(state, uv);
+}
 
 function restoreSoftTissueGeometry() {
   for (const part of softTissue.parts) {
@@ -563,7 +766,7 @@ function prepareSoftTissueDeformation(clone) {
   const widthHalf = Math.max(rootSize.x * 0.5, 1e-5);
   const height = Math.max(rootSize.y, 1e-5);
   const depthHalf = Math.max(rootSize.z * 0.5, 1e-5);
-  softTissue.bellyCenterY = (rootBounds.min.y + height * 0.475 - rootCenter.y) * noraModelScale;
+  softTissue.chestCenterY = (rootBounds.min.y + height * 0.685 - rootCenter.y) * noraModelScale;
 
   for (const entry of entries) {
     const count = entry.positionAttribute.count;
@@ -581,13 +784,15 @@ function prepareSoftTissueDeformation(clone) {
       const yNorm = (entry.rootPositions[k + 1] - rootBounds.min.y) / height;
       const xNorm = Math.abs((entry.rootPositions[k] - rootCenter.x) / widthHalf);
       const zNorm = Math.abs((entry.rootPositions[k + 2] - rootCenter.z) / depthHalf);
-      // A tapered abdomen mask: lower/middle torso only, fading at the waist, chest,
-      // sides, and arms/legs. The vertical axis is Y, as specified by glTF.
-      const vertical = THREE.MathUtils.smoothstep(yNorm, 0.34, 0.425) *
-        (1 - THREE.MathUtils.smoothstep(yNorm, 0.515, 0.625));
-      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.14, 0.48);
-      const depthWeight = 0.68 + 0.32 * THREE.MathUtils.smoothstep(zNorm, 0.08, 0.70);
-      weights[i] = vertical * lateral * depthWeight;
+      // Tight, front-only chest mask. The model faces +Z (towards the viewer at its
+      // starting position). Signed depth is deliberate: all rear-facing vertices get
+      // an exact zero weight, and their original positions AND normals are preserved.
+      const vertical = THREE.MathUtils.smoothstep(yNorm, 0.55, 0.63) *
+        (1 - THREE.MathUtils.smoothstep(yNorm, 0.75, 0.82));
+      const lateral = 1 - THREE.MathUtils.smoothstep(xNorm, 0.20, 0.58);
+      const signedFrontDepth = (entry.rootPositions[k + 2] - rootCenter.z) / depthHalf;
+      const frontOnly = THREE.MathUtils.smoothstep(signedFrontDepth, 0.08, 0.48);
+      weights[i] = vertical * lateral * frontOnly;
     }
 
     // Enlarge the frustum sphere by a small amount, so the wobbled vertices are not
@@ -628,6 +833,11 @@ function createNoraInstance() {
 
 function updateSoftTissueDynamics(frameDt) {
   if (!softTissue.parts.length || frameDt <= 0) return;
+  if (physicsTuning.chestResponse <= 0.001) {
+    softTissue.offset.set(0, 0, 0); softTissue.velocity.set(0, 0, 0); softTissue.filteredAcceleration.set(0, 0, 0);
+    if (softTissue.deformed) restoreSoftTissueGeometry();
+    return;
+  }
   const dt = Math.min(0.05, Math.max(0.001, frameDt));
   if (!softTissue.initialized) resetSoftTissueDynamics(false);
 
@@ -667,11 +877,12 @@ function updateSoftTissueDynamics(frameDt) {
   while (softTissue.accumulator >= fixedStep) {
     // Same spring/damper idea as the Potbelly Man prototype, scaled for this compact GLB.
     // No constant gravity sag is applied: at rest the model returns to its original shape.
-    const stiffness = 46;
-    const damping = 7.8;
-    const inertia = 0.88;
+    const stiffness = physicsTuning.chestStiffness;
+    const damping = physicsTuning.chestDamping;
+    const inertia = physicsTuning.chestInertia;
+    const chestGravity = physicsTuning.chestGravity;
     softTissue.velocity.x += (-stiffness * softTissue.offset.x - damping * softTissue.velocity.x - inertia * softTissue.filteredAcceleration.x) * fixedStep;
-    softTissue.velocity.y += (-stiffness * softTissue.offset.y - damping * softTissue.velocity.y - inertia * softTissue.filteredAcceleration.y) * fixedStep;
+    softTissue.velocity.y += (-stiffness * softTissue.offset.y - damping * softTissue.velocity.y - inertia * softTissue.filteredAcceleration.y - chestGravity) * fixedStep;
     softTissue.velocity.z += (-stiffness * softTissue.offset.z - damping * softTissue.velocity.z - inertia * softTissue.filteredAcceleration.z) * fixedStep;
     softTissue.velocity.clampLength(0, 0.62);
     softTissue.offset.addScaledVector(softTissue.velocity, fixedStep);
@@ -695,7 +906,8 @@ function updateSoftTissueDynamics(frameDt) {
   const sx = THREE.MathUtils.clamp(-acceleration.x * 0.0028 + bellyVelocity.x * 0.045, -0.18, 0.18);
   const sy = THREE.MathUtils.clamp(-acceleration.y * 0.0022 + bellyVelocity.y * 0.035, -0.13, 0.13);
   const sz = THREE.MathUtils.clamp(-acceleration.z * 0.0028 + bellyVelocity.z * 0.045, -0.18, 0.18);
-  const rippleAmplitude = Math.min(0.010, bellyVelocity.length() * 0.010 + acceleration.length() * 0.00017);
+  const chestResponse = physicsTuning.chestResponse;
+  const rippleAmplitude = Math.min(0.010, bellyVelocity.length() * 0.010 + acceleration.length() * 0.00017) * chestResponse;
 
   for (const part of softTissue.parts) {
     const output = part.positionAttribute.array;
@@ -706,16 +918,16 @@ function updateSoftTissueDynamics(frameDt) {
     const count = part.positionAttribute.count;
     for (let i = 0; i < count; i++) {
       const k = i * 3;
-      const weight = weights[i];
+      const weight = weights[i] * chestResponse;
       if (weight < 0.0002) {
         output[k] = original[k]; output[k + 1] = original[k + 1]; output[k + 2] = original[k + 2];
         continue;
       }
       const x = base[k], y = base[k + 1], z = base[k + 2];
-      const wave = Math.sin(softTissue.phase + (y - softTissue.bellyCenterY) * 86 + z * 28 + x * 18) * rippleAmplitude * weight;
+      const wave = Math.sin(softTissue.phase + (y - softTissue.chestCenterY) * 86 + z * 28 + x * 18) * rippleAmplitude * weight;
       softTemp.rootDelta.set(
         softTissue.offset.x * weight + x * sx * weight + normals[k] * wave,
-        softTissue.offset.y * weight + (y - softTissue.bellyCenterY) * sy * weight + normals[k + 1] * wave,
+        softTissue.offset.y * weight + (y - softTissue.chestCenterY) * sy * weight + normals[k + 1] * wave,
         softTissue.offset.z * weight + z * sz * weight + normals[k + 2] * wave
       ).multiplyScalar(1 / Math.max(noraModelScale, 1e-6));
       softTemp.localDelta.copy(softTemp.rootDelta).applyMatrix3(part.inverseLinear);
@@ -725,6 +937,17 @@ function updateSoftTissueDynamics(frameDt) {
     }
     part.positionAttribute.needsUpdate = true;
     part.geometry.computeVertexNormals();
+    // Normal recomputation can otherwise shade shared rear vertices differently even
+    // though their positions did not move. Restore original normals wherever the mask is zero.
+    const computedNormals = part.normalAttribute.array;
+    for (let i = 0; i < count; i++) {
+      if (weights[i] >= 0.0002) continue;
+      const k = i * 3;
+      computedNormals[k] = part.originalNormals[k];
+      computedNormals[k + 1] = part.originalNormals[k + 1];
+      computedNormals[k + 2] = part.originalNormals[k + 2];
+    }
+    part.normalAttribute.needsUpdate = true;
   }
   softTissue.deformed = true;
 }
@@ -769,7 +992,7 @@ noraLoader.load('./woman_wearing_swimsuit.glb', gltf => {
       syncVisual();
     }
     resetSoftTissueDynamics(false);
-    setStatus('woman_wearing_swimsuit.glb loaded. Localised soft-belly wobble is ready; the original shape is preserved when resting.');
+    setStatus('woman_wearing_swimsuit.glb loaded. Localised front-chest-only soft-tissue motion is ready; the original shape is preserved when resting.');
     console.info(`woman_wearing_swimsuit.glb loaded. Model normalized to ${CUBE_SIZE.toFixed(2)} m maximum size.`);
   } catch (error) {
     console.error('Could not prepare woman_wearing_swimsuit.glb:', error);
@@ -1192,7 +1415,8 @@ function makeState(poseObject, kind) {
     offsetPos: new THREE.Vector3(), offsetQuat: new THREE.Quaternion(),
     lastPos: new THREE.Vector3(), lastQuat: new THREE.Quaternion(),
     linearVelocity: new THREE.Vector3(), angularVelocity: new THREE.Vector3(), lastTime: 0,
-    lastAttempt: 0, lastRejectStatus: 0, lastButtonDown: false, pinching: false
+    lastAttempt: 0, lastRejectStatus: 0, lastButtonDown: false, pinching: false,
+    vrTuningActive: false, vrTuningSlider: null, vrTuningFromHand: false
   };
 }
 for (let i = 0; i < 2; i++) {
@@ -1218,8 +1442,14 @@ for (let i = 0; i < 2; i++) {
   const cState = makeState(grip, 'controller');
   cState.controllerObject = controller;
   cState.handedness = i === 0 ? 'left' : 'right';
-  controller.addEventListener('selectstart', () => beginXRGrab(cState, 'select'));
-  controller.addEventListener('selectend', () => { if (cState.inputKind === 'select') endXRGrab(cState); });
+  controller.addEventListener('selectstart', () => {
+    if (startVRTuningInteraction(cState, tuningUVFromController(cState))) return;
+    beginXRGrab(cState, 'select');
+  });
+  controller.addEventListener('selectend', () => {
+    if (cState.vrTuningActive) endVRTuningInteraction(cState);
+    else if (cState.inputKind === 'select') endXRGrab(cState);
+  });
   controller.addEventListener('squeezestart', () => beginXRGrab(cState, 'squeeze'));
   controller.addEventListener('squeezeend', () => { if (cState.inputKind === 'squeeze') endXRGrab(cState); });
   controller.addEventListener('connected', (event) => {
@@ -1236,6 +1466,7 @@ for (let i = 0; i < 2; i++) {
     grip.visible = false;
     hand.visible = false;
     if (cState.holding) endXRGrab(cState);
+    if (cState.vrTuningActive) endVRTuningInteraction(cState);
     cState.lastButtonDown = false;
   });
   controllerStates.push(cState);
@@ -1282,12 +1513,14 @@ function updateHandAnchors() {
     }
     const pinchNow = thumbPos.distanceTo(indexPos) < 0.035;
     if (pinchNow) {
-      if (!state.holding && performance.now() - state.lastAttempt > 180) {
+      if (!state.holding && !state.vrTuningActive && performance.now() - state.lastAttempt > 180) {
         state.lastAttempt = performance.now();
-        beginXRGrab(state, 'pinch');
+        if (!startHandTuningInteraction(state)) beginXRGrab(state, 'pinch');
       }
-    } else if (state.holding && state.inputKind === 'pinch') {
-      endXRGrab(state);
+      if (state.vrTuningActive) updateHandTuningInteraction(state);
+    } else {
+      if (state.vrTuningActive) endVRTuningInteraction(state);
+      else if (state.holding && state.inputKind === 'pinch') endXRGrab(state);
     }
     state.pinching = pinchNow;
   }
@@ -1305,24 +1538,31 @@ function updateControllerGrabPolling(now) {
     if (!source || source.hand || !source.gamepad) {
       // A disappearing input source must never leave the model locked in a held state.
       if (state.holding || heldBy === state) endXRGrab(state);
+      if (state.vrTuningActive) endVRTuningInteraction(state);
       state.lastButtonDown = false;
       continue;
     }
     const buttons = source.gamepad.buttons || [];
     const trigger = buttons[0];
     const squeeze = buttons[1];
-    const down = Boolean(
-      (trigger && (trigger.pressed || trigger.value > 0.58)) ||
-      (squeeze && (squeeze.pressed || squeeze.value > 0.58))
-    );
+    const triggerDown = Boolean(trigger && (trigger.pressed || trigger.value > 0.58));
+    const squeezeDown = Boolean(squeeze && (squeeze.pressed || squeeze.value > 0.58));
+    const down = triggerDown || squeezeDown;
 
-    // Important fix: polling now releases grabs started by select/squeeze events too,
+    if (state.vrTuningActive) {
+      if (!down) endVRTuningInteraction(state);
+      else if (state.vrTuningSlider) applyTuningUVToState(state, tuningUVFromController(state));
+      state.lastButtonDown = down;
+      continue;
+    }
+    // Important fix: polling releases grabs started by select/squeeze events too,
     // not just grabs that began through polling. This covers missed WebXR end events.
     if (state.holding && !down && ['select', 'squeeze', 'poll'].includes(state.inputKind)) {
       endXRGrab(state);
     } else if (down && !state.holding && now - state.lastAttempt > 180) {
       state.lastAttempt = now;
-      beginXRGrab(state, 'poll');
+      // Only the trigger acts as a UI pointer. Grip/squeeze continues to grab the object.
+      if (!(triggerDown && startVRTuningInteraction(state, tuningUVFromController(state)))) beginXRGrab(state, 'poll');
     }
     state.lastButtonDown = down;
   }
@@ -1626,6 +1866,8 @@ function setPassthroughVisualMode(enabled) {
 renderer.xr.addEventListener('sessionstart', () => {
   const session = renderer.xr.getSession();
   const isPassthrough = requestedSessionMode === 'immersive-ar' || (session && session.environmentBlendMode && session.environmentBlendMode !== 'opaque');
+  vrTuningPanel.visible = true;
+  drawVRTuningPanel();
   setPassthroughVisualMode(isPassthrough);
   camera.position.set(0, 0, 0);
   camera.rotation.set(0, 0, 0);
@@ -1654,6 +1896,7 @@ renderer.xr.addEventListener('sessionstart', () => {
   if (!isPassthrough) setStatus('VR active. Squeeze trigger/grip to grab; left thumbstick moves around the room.');
 });
 renderer.xr.addEventListener('sessionend', () => {
+  vrTuningPanel.visible = false;
   setPassthroughVisualMode(false);
   requestedSessionMode = 'immersive-vr';
   setDesktopCamera();
@@ -1710,7 +1953,7 @@ function processPhysicsContactSounds() {
 }
 
 let previous = performance.now(), accumulator = 0;
-setStatus('Loading your custom 3D model: woman_wearing_swimsuit.glb. Keep it beside index265.html. Wooden impact sounds unlock after your first interaction.');
+setStatus('Loading woman_wearing_swimsuit.glb. In VR, point at the floating physics panel with a controller and hold the trigger to tune chest response, damping, tissue gravity and object gravity.');
 renderer.setAnimationLoop((now, xrFrame) => {
   const frameDt = Math.min(.05, Math.max(0, (now - previous) / 1000));
   previous = now;
@@ -1718,6 +1961,7 @@ renderer.setAnimationLoop((now, xrFrame) => {
     updateQuestGuardianBounds(xrFrame);
     updateDetectedFloor(xrFrame, now);
     updateXRLocomotion(frameDt, xrFrame);
+    updateVRTuningInteractions();
     updateControllerGrabPolling(now);
     updateHandAnchors();
   }
